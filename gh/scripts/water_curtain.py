@@ -214,8 +214,8 @@ def simulate_water_path_polyline(
     slide_horizontal_splash_speed: float = 0.8,
     slide_substeps: int = 5,
     slide_substep_dt_s: float = 0.05,
-    bounce_threshold: float = 0.85,
-    bounce_loss: float = 0.40,
+    bounce_threshold: float = 0.55,
+    bounce_loss: float = 0.55,
     pond_z_m: float = 0.0,
     pos_offset_m: float = 1.0e-3,
 ) -> List[PointXYZ]:

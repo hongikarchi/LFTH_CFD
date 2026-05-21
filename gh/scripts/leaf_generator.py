@@ -195,7 +195,7 @@ def _default_leaves(
             "z_m": z_m,
             "length_m": length_m,
             "width_m": width_m,
-            "camber": 0.28,
+            "camber": 0.55,
             "twist_deg": (i * 28.0) - 50.0,
             "pitch_deg": 20.0 - 1.0 * i,  # gentler tilt lower (splash catchment)
             "rim_height_m": 0.10,
