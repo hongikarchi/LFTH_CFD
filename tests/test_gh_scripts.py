@@ -165,3 +165,103 @@ def test_leaf_generator_full_export_round_trip(tmp_path: Path) -> None:
     assert (out_dir / "geometry" / "leaf.stl").exists()
     with (out_dir / "params.json").open(encoding="utf-8") as fh:
         load_params(json.load(fh))
+
+
+# ---- water_curtain helpers --------------------------------------------------
+
+
+def test_water_curtain_nozzles_from_points_mm_doc() -> None:
+    from gh.scripts.water_curtain import nozzles_from_points
+
+    points = [(1000.0, 0.0, 15000.0), (-500.0, 500.0, 15000.0)]
+    nozzles = nozzles_from_points(points, flow_rate_lpm=45.0, doc_to_m=0.001)
+    assert len(nozzles) == 2
+    assert nozzles[0]["position"] == [1.0, 0.0, 15.0]
+    assert nozzles[1]["position"] == [-0.5, 0.5, 15.0]
+    assert nozzles[0]["flow_rate_lpm"] == 45.0
+    assert nozzles[0]["velocity_mps"] is None
+    assert nozzles[0]["nozzle_id"] == "n0"
+    assert nozzles[1]["nozzle_id"] == "n1"
+
+
+def test_water_curtain_nozzles_from_points_identity_scale() -> None:
+    from gh.scripts.water_curtain import nozzles_from_points
+
+    nozzles = nozzles_from_points([(2.0, 1.0, 15.0)], flow_rate_lpm=30.0)
+    assert nozzles[0]["position"] == [2.0, 1.0, 15.0]
+
+
+def test_water_curtain_nozzles_from_points_rejects_zero_flow() -> None:
+    import pytest
+
+    from gh.scripts.water_curtain import nozzles_from_points
+
+    with pytest.raises(ValueError):
+        nozzles_from_points([(0.0, 0.0, 15.0)], flow_rate_lpm=0.0)
+
+
+def test_water_curtain_fall_endpoint_vertical() -> None:
+    from gh.scripts.water_curtain import fall_trajectory_endpoint
+
+    end = fall_trajectory_endpoint((1.0, 2.0, 15.0), fall_height_m=15.0)
+    assert end == (1.0, 2.0, 0.0)
+
+
+def test_water_curtain_fall_endpoint_rejects_bad_inputs() -> None:
+    import pytest
+
+    from gh.scripts.water_curtain import fall_trajectory_endpoint
+
+    with pytest.raises(ValueError):
+        fall_trajectory_endpoint((0.0, 0.0, 15.0), fall_height_m=0.0)
+    with pytest.raises(ValueError):
+        fall_trajectory_endpoint((0.0, 0.0, 15.0), fall_height_m=15.0, gravity_mps2=0.0)
+
+
+# ---- build_real_leaf_mesh ---------------------------------------------------
+
+
+def test_build_real_leaf_mesh_counts() -> None:
+    from gh.scripts.leaf_generator import build_real_leaf_mesh
+
+    n_u, n_theta = 8, 12
+    verts, faces = build_real_leaf_mesh(
+        height_total_m=14.0,
+        landing_radius_m=1.2,
+        twist_total_deg=60.0,
+        n_u=n_u,
+        n_theta=n_theta,
+    )
+    # 3 leaves, each n_u * n_theta verts; 2*(n_u-1)*n_theta tris per leaf
+    assert len(verts) == 3 * n_u * n_theta
+    assert len(faces) == 3 * 2 * (n_u - 1) * n_theta
+
+
+def test_build_real_leaf_mesh_z_bounds() -> None:
+    from gh.scripts.leaf_generator import build_real_leaf_mesh
+
+    height = 14.0
+    verts, _ = build_real_leaf_mesh(
+        height_total_m=height,
+        landing_radius_m=1.2,
+        twist_total_deg=0.0,
+    )
+    z_values = [v[2] for v in verts]
+    assert min(z_values) >= 0.0
+    # camber + rim raises z above base z; cap by 2 m above height
+    assert max(z_values) <= height + 2.0
+
+
+def test_build_real_leaf_mesh_rejects_bad_input() -> None:
+    import pytest
+
+    from gh.scripts.leaf_generator import build_real_leaf_mesh
+
+    with pytest.raises(ValueError):
+        build_real_leaf_mesh(height_total_m=0.0, landing_radius_m=1.0, twist_total_deg=0.0)
+    with pytest.raises(ValueError):
+        build_real_leaf_mesh(height_total_m=10.0, landing_radius_m=0.0, twist_total_deg=0.0)
+    with pytest.raises(ValueError):
+        build_real_leaf_mesh(
+            height_total_m=10.0, landing_radius_m=1.0, twist_total_deg=0.0, n_u=1
+        )

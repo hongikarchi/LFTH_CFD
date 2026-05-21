@@ -100,6 +100,7 @@ def _template_params(candidate_id: str) -> dict[str, Any]:
             "flow_rate_max_lpm": 60.0,
             "target_drain_position": [0.0, 0.0, 0.0],
             "pond_radius_m": 4.5,
+            "nozzles": None,
         },
         "material": {
             "base_material": "brass_casting",

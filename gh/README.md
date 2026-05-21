@@ -99,9 +99,9 @@ import numpy as np
 
 ---
 
-## LeafGenerator.gh — Phase B MVP 빌드 가이드
+## LeafGenerator.gh — water curtain + real leaf 가이드
 
-`.gh`는 binary 라서 자동 생성 한계 있음(GH_MCP `add_component` 는 컴포넌트 placement만 지원, 코드 주입 불가). 한 번만 수동 빌드, 이후 git에 commit.
+`.gh` 는 binary 라서 자동 생성 불가. 한 번 수동 빌드, 이후 git commit. `gh/scripts/leaf_generator.py` 와 `gh/scripts/water_curtain.py` 가 진짜 로직; GH 내부 Py3 컴포넌트는 thin wrapper.
 
 ### 컴포넌트 (캔버스 배치)
 
@@ -111,9 +111,11 @@ import numpy as np
 | `landing_radius_m` | Number Slider | range 0.5–3.0, value 1.2 |
 | `twist_total_deg` | Number Slider | range -180–180, value 60.0 |
 | `candidate_id` | Panel (text) | `cand_0001` |
-| `build` | Python 3 Script | 4 input: `height_total_m`, `landing_radius_m`, `twist_total_deg`, `candidate_id` / 3 output: `mesh`, `params_dict`, `candidate_id` |
-| `export` | Python 3 Script | 3 input: `mesh`, `params_dict`, `candidate_id` / 1 output: `summary` |
-| `summary` | Panel | (출력 표시) |
+| `nozzle_points` | Point param (multi-input) | Rhino 캔버스에서 직접 점 배치 |
+| `flow_rate_lpm` | Number Slider | range 10–100, value 45.0 |
+| `build` | Python 3 Script | 6 input: 위 6개 / 4 output: `a=mesh`, `b=params_json`, `c=candidate_id`, `d=curtain_curves` |
+| `export` | Python 3 Script | 3 input: `mesh`, `params_dict` (a.k.a. b from build), `candidate_id` / 1 output: `a=summary` |
+| `summary` | Panel | export 결과 표시 |
 
 ### 와이어
 
@@ -122,61 +124,99 @@ height_total_m ───┐
 landing_radius_m ─┼→ build.input(0..2)
 twist_total_deg ──┘
 candidate_id ────→ build.candidate_id
+nozzle_points ───→ build.nozzle_points
+flow_rate_lpm ───→ build.flow_rate_lpm
 
-build.mesh ──────→ export.mesh
-build.params_dict → export.params_dict
-build.candidate_id → export.candidate_id
+build.a (mesh)       ─→ export.mesh
+build.b (params_json) → export.params_dict
+build.c (candidate_id)→ export.candidate_id
+build.d (curtain_curves) → preview only (그 자체로 캔버스에 표시)
 
-export.summary ──→ summary panel
+export.a (summary) ──→ summary panel
 ```
 
 ### `build` 컴포넌트 코드 (paste)
 
+Rhino doc 단위(mm/m 등)와 무관하게 mesh + curtain curves 가 실제 크기로 보이도록 `Rhino.RhinoMath.UnitScale` 사용.
+
 ```python
 # r: trimesh
 import sys, pathlib, json
+import Rhino
+import Rhino.Geometry as rg
+
 REPO_ROOT = pathlib.Path(r"C:\Users\user\Documents\LFTH_CFD")
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from gh.scripts.leaf_generator import build_mvp_mesh, build_params_dict
-import Rhino.Geometry as rg
+from gh.scripts.leaf_generator import build_real_leaf_mesh, build_params_dict
+from gh.scripts.water_curtain import nozzles_from_points, fall_trajectory_endpoint
 
-verts, faces = build_mvp_mesh(height_total_m, landing_radius_m, twist_total_deg)
-params_dict = build_params_dict(candidate_id, height_total_m, landing_radius_m, twist_total_deg)
+doc = Rhino.RhinoDoc.ActiveDoc
+m_to_doc = Rhino.RhinoMath.UnitScale(Rhino.UnitSystem.Meters, doc.ModelUnitSystem)
+m_to_doc = m_to_doc if m_to_doc != 0 else 1.0
+doc_to_m = 1.0 / m_to_doc
 
+verts, faces = build_real_leaf_mesh(height_total_m, landing_radius_m, twist_total_deg)
+
+# doc-unit Points → meters
+points_xyz = [(p.X * doc_to_m, p.Y * doc_to_m, p.Z * doc_to_m) for p in nozzle_points]
+nozzles = nozzles_from_points(points_xyz, flow_rate_lpm)
+
+params_dict = build_params_dict(
+    candidate_id, height_total_m, landing_radius_m, twist_total_deg, nozzles=nozzles
+)
+fall_h = params_dict["water"]["fall_height_m"]
+
+# Rhino preview mesh - meter→doc scale
 mesh = rg.Mesh()
 for v in verts:
-    mesh.Vertices.Add(v[0], v[1], v[2])
+    mesh.Vertices.Add(v[0] * m_to_doc, v[1] * m_to_doc, v[2] * m_to_doc)
 for f in faces:
     mesh.Faces.AddFace(f[0], f[1], f[2])
 mesh.Normals.ComputeNormals()
 mesh.Compact()
 
-a = mesh                       # output 0: mesh (RhinoCommon Mesh)
-b = json.dumps(params_dict)    # output 1: params_dict as JSON string (see note)
-c = candidate_id               # output 2: candidate_id (pass-through)
+# Free-fall preview lines (one per nozzle, meter→doc scale)
+curtain_curves = []
+for nz in nozzles:
+    sp_m = tuple(nz["position"])
+    ep_m = fall_trajectory_endpoint(sp_m, fall_h)
+    sp = rg.Point3d(sp_m[0] * m_to_doc, sp_m[1] * m_to_doc, sp_m[2] * m_to_doc)
+    ep = rg.Point3d(ep_m[0] * m_to_doc, ep_m[1] * m_to_doc, ep_m[2] * m_to_doc)
+    curtain_curves.append(rg.Line(sp, ep).ToNurbsCurve())
+
+a = mesh
+b = json.dumps(params_dict)
+c = candidate_id
+d = curtain_curves
 ```
 
-**Note on `json.dumps`**: GH의 default type-hint coercion이 Python `dict` 를 wire 통과 시 string으로 변환 → 수신측 `dict(params_dict)` 실패. 우리가 직접 JSON 직렬화하면 lossy coercion 회피. `export` 컴포넌트가 `json.loads` 로 복원. 후속: `System.Object` type hint 가 raw dict 보존하면 json round-trip 제거.
-
-`REPO_ROOT` 절대경로는 각자 머신에 맞춰 수정 (TODO: 환경변수 `LEAFLAB_REPO_ROOT` 로 빼는 게 깔끔 — Phase C 작업).
-
 ### `export` 컴포넌트 코드 (paste)
+
+mesh.Vertices 는 doc-unit, STL/params 는 항상 meter — 역변환 필요.
 
 ```python
 # r: trimesh
 import sys, pathlib, json
+import Rhino
+
 REPO_ROOT = pathlib.Path(r"C:\Users\user\Documents\LFTH_CFD")
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from gh.scripts.export_candidate import export_candidate
 
-# params_dict arrives as JSON string (see build component note)
+doc = Rhino.RhinoDoc.ActiveDoc
+m_to_doc = Rhino.RhinoMath.UnitScale(Rhino.UnitSystem.Meters, doc.ModelUnitSystem)
+m_to_doc = m_to_doc if m_to_doc != 0 else 1.0
+doc_to_m = 1.0 / m_to_doc
+
 params_dict = json.loads(params_dict)
 
-verts = [(v.X, v.Y, v.Z) for v in mesh.Vertices]
+verts = []
+for v in mesh.Vertices:
+    verts.append((v.X * doc_to_m, v.Y * doc_to_m, v.Z * doc_to_m))
 faces = []
 for f in mesh.Faces:
     if f.IsQuad:
@@ -193,38 +233,42 @@ a = "OK | {} | tri={} | vert={}".format(
 )
 ```
 
-### 빌드 + commit
+### 단위 변환 노트
 
-1. Rhino 8 + Grasshopper 열기 (`GH_MCP` 컴포넌트 없는 fresh 캔버스 권장 — 협업자 머신 호환성)
-2. 위 컴포넌트 배치 + 와이어 + 코드 paste
-3. `File → Save As...` → `C:\Users\user\Documents\LFTH_CFD\gh\LeafGenerator.gh`
-4. `git add gh/LeafGenerator.gh && git commit -m "feat: Phase B.2 LeafGenerator.gh skeleton"`
+- `params.json` + STL = **meters** (불변)
+- Rhino preview = **doc unit** (mm/m 어느 쪽이든 자동 scale)
+- `Rhino.RhinoMath.UnitScale(Rhino.UnitSystem.Meters, doc.ModelUnitSystem)` 가 m→doc 환산. `doc_to_m = 1 / m_to_doc`.
+- 따라서: build wrapper 가 verts 를 doc unit 으로 곱해서 preview Mesh 생성. export wrapper 가 verts 를 다시 m 으로 환원해서 STL/params 작성.
+
+### 사용자 수동 빌드 단계 (PR-B)
+
+1. Rhino 8 + Grasshopper 열고 `gh/LeafGenerator.gh` 열기 (기존 cylinder 버전)
+2. 신규 컴포넌트 추가: `Point` Param (multi-input), `Number Slider` (flow_rate, 10–100)
+3. `build` 컴포넌트 입력 port 2개 추가 (`nozzle_points`, `flow_rate_lpm`), 출력 port 1개 추가 (`d`)
+4. `build` / `export` Python 코드를 위 두 블록으로 paste
+5. `File → Save` 로 `gh/LeafGenerator.gh` 덮어쓰기
+6. `git add gh/LeafGenerator.gh && git commit -m "feat(gh): LeafGenerator water curtain + unit scale"`
 
 ### 동작 확인 (end-to-end)
 
 ```powershell
-# 0. 후보 디렉토리 셋업 (init-run 은 template만 만들고, GH가 덮어씀)
-uv run leaflab init-run cand_phaseb_e2e
+uv run leaflab init-run cand_water_v11
+# Rhino에서 LeafGenerator.gh 열기, candidate_id panel을 "cand_water_v11"로 변경
+# nozzle 점 3-5개 캔버스에 배치, flow_rate=45
+# → runs/cand_water_v11/{params.json, geometry/leaf.stl} 자동 작성
 
-# 1. Rhino에서 LeafGenerator.gh 열기, candidate_id panel을 "cand_phaseb_e2e"로 변경
-#    -> 자동 recompute -> runs/cand_phaseb_e2e/{params.json, geometry/leaf.stl} 작성
-
-# 2. STL 검증
-uv run leaflab check-geometry runs/cand_phaseb_e2e
-
-# 3. 결과 metrics 검증
-uv run leaflab validate runs/cand_phaseb_e2e/geometry_metrics.json
+uv run leaflab check-geometry runs/cand_water_v11
+uv run leaflab fast-sim runs/cand_water_v11 -n 200
+uv run leaflab validate runs/cand_water_v11/fast_metrics.json
 ```
 
-세 단계 다 `ok:` 출력하면 Phase B 완료.
+세 단계 다 `ok:` 또는 exit 0 이면 성공.
 
 ### MVP 한계 (의도된 trade-off)
 
-- 형상: 단순 tapered + twisted cylinder. 실제 leaf 아님.
-- 슬라이더 3개만. 모든 schema 필드 노출 X.
-- Spine / leaf profile / rim / channel — Phase C 또는 후속 task.
-
-이 단계 목표는 GH ↔ leaflab CLI **파이프라인 동작 검증** 이지 최종 형상 X.
+- 형상: 3-leaf dome stack. 실제 leaf 보다 단순 (no channel/spine NURBS — Phase D refine).
+- 슬라이더 5개. 나머지 schema 필드는 `build_params_dict` 안에서 default.
+- Parabolic fall (oblique velocity) 미지원 — vertical drop만.
 
 ## 의존성 격리 검증
 

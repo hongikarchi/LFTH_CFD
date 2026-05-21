@@ -74,6 +74,19 @@ class GeometryParams(StrictModel):
         return self
 
 
+class NozzleParams(StrictModel):
+    """Per-point water release. Positions in meters, world frame.
+
+    When `WaterParams.nozzles` is set (non-empty list), the fast_sim
+    samples particles from these nozzle discs instead of the annulus.
+    """
+
+    position: tuple[float, float, float]
+    flow_rate_lpm: float = Field(gt=0)
+    velocity_mps: tuple[float, float, float] | None = None
+    nozzle_id: str
+
+
 class WaterParams(StrictModel):
     fall_height_m: float = Field(gt=0)
     gravity_mps2: float = 9.81
@@ -87,6 +100,7 @@ class WaterParams(StrictModel):
     flow_rate_max_lpm: float = Field(gt=0)
     target_drain_position: tuple[float, float, float]
     pond_radius_m: float = Field(gt=0)
+    nozzles: list[NozzleParams] | None = None
 
 
 class MaterialParams(StrictModel):
