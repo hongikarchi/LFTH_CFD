@@ -65,8 +65,7 @@ class GeometryParams(StrictModel):
             )
         if self.top_leaf_z_m > self.height_total_m:
             raise ValueError(
-                f"geometry.top_leaf_z_m={self.top_leaf_z_m} > "
-                f"height_total_m={self.height_total_m}"
+                f"geometry.top_leaf_z_m={self.top_leaf_z_m} > height_total_m={self.height_total_m}"
             )
         if self.top_leaf_z_m < self.base_z_m:
             raise ValueError(

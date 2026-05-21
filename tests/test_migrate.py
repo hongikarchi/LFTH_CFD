@@ -31,9 +31,7 @@ def test_migrate_no_params_in_dir(tmp_path: Path) -> None:
     assert "no params.json found" in result.output
 
 
-def test_migrate_skips_current_version(
-    tmp_path: Path, sample_params_dict: dict
-) -> None:
+def test_migrate_skips_current_version(tmp_path: Path, sample_params_dict: dict) -> None:
     fp = _write_params(tmp_path / "run" / "params.json", sample_params_dict)
     result = runner.invoke(app, ["migrate", str(fp)])
     assert result.exit_code == 0, result.output
@@ -41,9 +39,7 @@ def test_migrate_skips_current_version(
     assert "already" in result.output
 
 
-def test_migrate_missing_schema_version_errors(
-    tmp_path: Path, sample_params_dict: dict
-) -> None:
+def test_migrate_missing_schema_version_errors(tmp_path: Path, sample_params_dict: dict) -> None:
     del sample_params_dict["schema_version"]
     fp = _write_params(tmp_path / "params.json", sample_params_dict)
     result = runner.invoke(app, ["migrate", str(fp)])
@@ -51,9 +47,7 @@ def test_migrate_missing_schema_version_errors(
     assert "missing required 'schema_version'" in result.output
 
 
-def test_migrate_unknown_version_errors(
-    tmp_path: Path, sample_params_dict: dict
-) -> None:
+def test_migrate_unknown_version_errors(tmp_path: Path, sample_params_dict: dict) -> None:
     sample_params_dict["schema_version"] = "0.5"
     fp = _write_params(tmp_path / "params.json", sample_params_dict)
     result = runner.invoke(app, ["migrate", str(fp)])
