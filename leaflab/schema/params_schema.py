@@ -56,7 +56,7 @@ class LeafParams(StrictModel):
 
 
 class GeometryParams(StrictModel):
-    leaf_count: int = Field(ge=1, le=5)
+    leaf_count: int = Field(ge=1, le=12)
     single_surface_intent: bool = True
     height_total_m: float = Field(gt=0, le=15.0)
     base_z_m: float = 0.0

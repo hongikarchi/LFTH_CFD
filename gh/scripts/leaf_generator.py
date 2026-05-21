@@ -152,9 +152,65 @@ def build_real_leaf_mesh(
 # build_leaf_v2_mesh — schema-driven petal mesh (plan §9 sizes from LeafParams)
 # ---------------------------------------------------------------------------
 
-_DEFAULT_N_PETALS_PER_LEAF: Tuple[int, ...] = (5, 4, 3)
+# 6 stacked flower modules (matching reference SketchUp geometry topology:
+# 6 메쉬 on layer 꽃_1, each ~7×7×6m before compress-to-15m). Each module
+# gets 5 petals splaying outward.
+_DEFAULT_N_PETALS_PER_LEAF: Tuple[int, ...] = (5, 5, 5, 5, 5, 5)
 _DEFAULT_PETAL_ARC_OVERLAP: float = 1.10
-_DEFAULT_FACE_ID_PER_LEAF: Tuple[int, ...] = (0, 1, 2)
+_DEFAULT_N_MODULES: int = 6
+
+
+def _default_leaves(
+    height_total_m: float,
+    landing_radius_m: float,
+    n_modules: int = _DEFAULT_N_MODULES,
+) -> List[Dict[str, Any]]:
+    """Generate N stacked flower-module leaf dicts matching reference topology.
+
+    Reference (Rhino layer 꽃_1) has 6 modules spanning ~30m, each ~7×7×6m.
+    We compress to fit ``height_total_m`` and scale horizontal extents from
+    ``landing_radius_m``. Modules sit at evenly spaced z within
+    [base+module_h, top-module_h].
+    """
+    if n_modules < 2:
+        raise ValueError("n_modules must be >= 2, got {0}".format(n_modules))
+
+    # tight stack — top at 0.92, bottom at 0.08, evenly spaced.
+    z_top_frac = 0.92
+    z_bot_frac = 0.08
+    spacing = (z_top_frac - z_bot_frac) / (n_modules - 1)
+
+    leafs: List[Dict[str, Any]] = []
+    for i in range(n_modules):
+        z_frac = z_top_frac - i * spacing
+        z_m = z_frac * height_total_m
+        # reverse-cone cascade — each module wider than the one above so water
+        # cascading off its outer edge always lands on the next module below.
+        size_factor = 1.0 + 0.80 * (i / max(1, n_modules - 1))
+        length_m = max(0.6, landing_radius_m * 2.0 * size_factor)
+        width_m = max(0.5, length_m * 0.78)
+        is_top = i == 0
+        leaf: Dict[str, Any] = {
+            "leaf_id": "M{0}".format(i),
+            "z_m": z_m,
+            "length_m": length_m,
+            "width_m": width_m,
+            "camber": 0.28,
+            "twist_deg": (i * 28.0) - 50.0,
+            "pitch_deg": 20.0 - 1.0 * i,  # gentler tilt lower (splash catchment)
+            "rim_height_m": 0.10,
+            "rim_thickness_m": 0.040,
+            "channel_depth_m": 0.06,
+            "channel_offset_m": 0.0,
+        }
+        if is_top:
+            leaf["landing_angle_deg"] = 14.0
+            leaf["landing_radius_m"] = landing_radius_m
+            leaf["overlap_to_next_m"] = 0.6
+        else:
+            leaf["overlap_to_next_m"] = 0.4
+        leafs.append(leaf)
+    return leafs
 
 
 def _bezier_point(t: float, cps: List[Tuple[float, float, float]]) -> Tuple[float, float, float]:
@@ -402,11 +458,14 @@ def build_params_dict(
     ``configs/base_params.json`` is fleshed out (Phase C task), both this and
     ``init_run`` should load from it instead of duplicating.
     """
-    top_leaf_z = max(0.1, height_total_m - 0.3)
+    leafs_list = _default_leaves(height_total_m, landing_radius_m)
+    top_leaf_z = leafs_list[0]["z_m"]
     return {
         "schema_version": "1.0",
         "candidate_id": candidate_id,
-        "description": "Phase D pre - 3-leaf dome stack",
+        "description": "Phase E - {0}-module flower stack matching reference".format(
+            len(leafs_list)
+        ),
         "global_constraints": {
             "max_height_m": 15.0,
             "min_height_m": 10.0,
@@ -414,7 +473,7 @@ def build_params_dict(
             "target_visual_axis": "facade_to_void_center",
         },
         "geometry": {
-            "leaf_count": 3,
+            "leaf_count": len(leafs_list),
             "single_surface_intent": True,
             "height_total_m": height_total_m,
             "base_z_m": 0.0,
@@ -429,51 +488,7 @@ def build_params_dict(
                 ],
                 "twist_total_deg": twist_total_deg,
             },
-            "leafs": [
-                {
-                    "leaf_id": "L1_landing",
-                    "z_m": top_leaf_z,
-                    "length_m": 5.2,
-                    "width_m": 3.4,
-                    "camber": 0.38,
-                    "twist_deg": 42.0,
-                    "pitch_deg": 18.0,
-                    "landing_angle_deg": 14.0,
-                    "landing_radius_m": landing_radius_m,
-                    "rim_height_m": 0.12,
-                    "rim_thickness_m": 0.045,
-                    "channel_depth_m": 0.08,
-                    "channel_offset_m": 0.35,
-                    "overlap_to_next_m": 0.6,
-                },
-                {
-                    "leaf_id": "L2_flow",
-                    "z_m": height_total_m * 0.5,
-                    "length_m": 4.6,
-                    "width_m": 2.8,
-                    "camber": 0.34,
-                    "twist_deg": -31.0,
-                    "pitch_deg": 24.0,
-                    "rim_height_m": 0.08,
-                    "rim_thickness_m": 0.04,
-                    "channel_depth_m": 0.06,
-                    "channel_offset_m": -0.25,
-                    "overlap_to_next_m": 0.4,
-                },
-                {
-                    "leaf_id": "L3_discharge",
-                    "z_m": height_total_m * 0.25,
-                    "length_m": 3.2,
-                    "width_m": 2.1,
-                    "camber": 0.28,
-                    "twist_deg": 26.0,
-                    "pitch_deg": 35.0,
-                    "rim_height_m": 0.05,
-                    "rim_thickness_m": 0.035,
-                    "channel_depth_m": 0.045,
-                    "channel_offset_m": 0.15,
-                },
-            ],
+            "leafs": leafs_list,
         },
         "water": {
             "fall_height_m": 15.0,

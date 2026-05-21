@@ -208,35 +208,49 @@ def simulate_water_path_polyline(
     velocity_mps: PointXYZ,
     mesh: Any,
     gravity_mps2: float = 9.81,
-    max_bounces: int = 8,
+    max_bounces: int = 12,
     n_samples_per_segment: int = 6,
-    slide_initial_speed_factor: float = 0.10,
-    slide_horizontal_splash_speed: float = 0.5,
+    slide_initial_speed_factor: float = 0.20,
+    slide_horizontal_splash_speed: float = 0.8,
+    slide_substeps: int = 5,
+    slide_substep_dt_s: float = 0.05,
+    bounce_threshold: float = 0.85,
+    bounce_loss: float = 0.40,
     pond_z_m: float = 0.0,
     pos_offset_m: float = 1.0e-3,
 ) -> List[PointXYZ]:
-    """Trace water cascading through a trimesh — always slides downhill.
+    """Trace water cascading through a trimesh — rough CFD-style.
 
-    Specular bounces are physically inappropriate for water on leaves
-    (water splashes / sheets, never rebounds upward). At each hit we
-    compute the surface's gravity-tangent direction (which way "downhill"
-    points on this triangle) and redirect water along it, with speed
-    scaled by the incoming kinetic energy.
+    At each hit, compute `normal_impact = |v_hat · n|`:
 
-    For a near-horizontal surface where gravity is mostly absorbed by
-    the normal, we add a small horizontal splash outward from the world
-    z-axis so the water doesn't stall.
+    - **normal_impact ≥ bounce_threshold** (~head-on): specular bounce
+      `v -= 2(v·n) n`, scaled by `bounce_loss`. Water visibly reflects
+      off the surface (rare, only on highly perpendicular hits).
+    - **else** (grazing): surface-trace slide — `slide_substeps` micro
+      iterations along the local gravity-tangent direction, each
+      advancing position by `vel · slide_substep_dt_s`. Velocity
+      accumulates tangent gravity. After substeps, water is presumed
+      to leave the leaf edge and free-falls to next raycast.
 
-    No hit → free-fall to ``z = pond_z_m``, sample the parabola, stop.
+    Polyline samples capture the trajectory shape (parabolic between
+    hits, multi-point along each slide).
+
+    Termination: pond reached, max_bounces hit, or zero velocity.
     """
     if max_bounces < 1:
         raise ValueError("max_bounces must be >= 1, got {0}".format(max_bounces))
     if n_samples_per_segment < 1:
         raise ValueError("n_samples_per_segment must be >= 1")
+    if slide_substeps < 1:
+        raise ValueError("slide_substeps must be >= 1")
     if gravity_mps2 <= 0:
         raise ValueError("gravity_mps2 must be > 0")
     if not 0.0 <= slide_initial_speed_factor <= 1.0:
         raise ValueError("slide_initial_speed_factor must be in [0, 1]")
+    if not 0.0 <= bounce_threshold <= 1.0:
+        raise ValueError("bounce_threshold must be in [0, 1]")
+    if not 0.0 <= bounce_loss <= 1.0:
+        raise ValueError("bounce_loss must be in [0, 1]")
 
     pos = (
         float(start_xyz_m[0]),
@@ -302,52 +316,91 @@ def simulate_water_path_polyline(
             t_hit = seg_len / max(speed, 1e-6)
             points.extend(_free_fall_sample(pos, vel, gravity_mps2, t_hit, n_samples_per_segment))
 
-        # always slide downhill — tangent of gravity on this triangle's plane
-        g_vec: PointXYZ = (0.0, 0.0, -gravity_mps2)
-        g_dot_n = _vec_dot(g_vec, normal_unit)
-        g_tan = (
-            g_vec[0] - g_dot_n * normal_unit[0],
-            g_vec[1] - g_dot_n * normal_unit[1],
-            g_vec[2] - g_dot_n * normal_unit[2],
-        )
-        g_tan_mag = _vec_norm(g_tan)
+        # decide: head-on bounce vs grazing slide
+        v_dir = _vec_unit(vel)
+        normal_impact = abs(_vec_dot(v_dir, normal_unit))
 
-        slide_speed = speed * slide_initial_speed_factor
-        if g_tan_mag > 0.5:
-            slide_dir = (
-                g_tan[0] / g_tan_mag,
-                g_tan[1] / g_tan_mag,
-                g_tan[2] / g_tan_mag,
+        if normal_impact >= bounce_threshold:
+            # specular reflection (rare, head-on hits on tilted surfaces)
+            v_dot_n = _vec_dot(vel, normal_unit)
+            reflected = (
+                vel[0] - 2.0 * v_dot_n * normal_unit[0],
+                vel[1] - 2.0 * v_dot_n * normal_unit[1],
+                vel[2] - 2.0 * v_dot_n * normal_unit[2],
             )
-            new_vel = _vec_scale(slide_dir, slide_speed)
+            new_vel = _vec_scale(reflected, bounce_loss)
+            new_pos = (
+                hit_point[0] + normal_unit[0] * pos_offset_m,
+                hit_point[1] + normal_unit[1] * pos_offset_m,
+                hit_point[2] + normal_unit[2] * pos_offset_m,
+            )
+            points.append(new_pos)
+            pos = new_pos
+            vel = new_vel
         else:
-            xy_r = math.sqrt(hit_point[0] * hit_point[0] + hit_point[1] * hit_point[1])
-            if xy_r > 1e-3:
-                slide_dir = (hit_point[0] / xy_r, hit_point[1] / xy_r, -0.1)
-            else:
-                slide_dir = (1.0, 0.0, -0.1)
-            slide_dir = _vec_unit(slide_dir)
-            new_vel = _vec_scale(slide_dir, slide_horizontal_splash_speed)
+            # surface-trace slide: tangent gravity over slide_substeps micro steps
+            g_vec: PointXYZ = (0.0, 0.0, -gravity_mps2)
+            g_dot_n = _vec_dot(g_vec, normal_unit)
+            g_tan = (
+                g_vec[0] - g_dot_n * normal_unit[0],
+                g_vec[1] - g_dot_n * normal_unit[1],
+                g_vec[2] - g_dot_n * normal_unit[2],
+            )
+            g_tan_mag = _vec_norm(g_tan)
 
-        # advance position along slide direction by `slide_step_m` so the next
-        # ray-cast escapes the current leaf's coverage (otherwise water hits
-        # the same face infinitely). slide_step ≈ leaf radius so one slide takes
-        # water roughly from center to edge.
-        slide_step_m = 1.5
-        slide_end = (
-            hit_point[0] + slide_dir[0] * slide_step_m,
-            hit_point[1] + slide_dir[1] * slide_step_m,
-            hit_point[2] + slide_dir[2] * slide_step_m,
-        )
-        # offset above surface so next ray doesn't snag the leaf we just left
-        new_pos = (
-            slide_end[0] + normal_unit[0] * pos_offset_m,
-            slide_end[1] + normal_unit[1] * pos_offset_m,
-            slide_end[2] + normal_unit[2] * pos_offset_m,
-        )
-        points.append(new_pos)
-        pos = new_pos
-        vel = new_vel
+            # initial tangent velocity from incoming v
+            v_normal_comp = _vec_dot(vel, normal_unit)
+            v_tan = (
+                vel[0] - v_normal_comp * normal_unit[0],
+                vel[1] - v_normal_comp * normal_unit[1],
+                vel[2] - v_normal_comp * normal_unit[2],
+            )
+            v_tan_mag = _vec_norm(v_tan)
+
+            # scale slide speed from incoming kinetic energy + add downhill kick
+            base_slide_speed = max(speed * slide_initial_speed_factor, v_tan_mag * 0.5)
+            if g_tan_mag > 0.3:
+                slide_dir = (
+                    g_tan[0] / g_tan_mag,
+                    g_tan[1] / g_tan_mag,
+                    g_tan[2] / g_tan_mag,
+                )
+            else:
+                # near-horizontal — splash radially outward from world z-axis
+                xy_r = math.sqrt(hit_point[0] * hit_point[0] + hit_point[1] * hit_point[1])
+                if xy_r > 1e-3:
+                    slide_dir = _vec_unit(
+                        (hit_point[0] / xy_r, hit_point[1] / xy_r, -0.2)
+                    )
+                else:
+                    slide_dir = (1.0, 0.0, -0.2)
+                base_slide_speed = max(base_slide_speed, slide_horizontal_splash_speed)
+
+            cur_vel = _vec_scale(slide_dir, base_slide_speed)
+            cur_pos = (
+                hit_point[0] + normal_unit[0] * pos_offset_m,
+                hit_point[1] + normal_unit[1] * pos_offset_m,
+                hit_point[2] + normal_unit[2] * pos_offset_m,
+            )
+
+            # micro slide steps — sample positions along surface tangent
+            for _slide in range(slide_substeps):
+                # tangent gravity acceleration
+                cur_vel = (
+                    cur_vel[0] + g_tan[0] * slide_substep_dt_s,
+                    cur_vel[1] + g_tan[1] * slide_substep_dt_s,
+                    cur_vel[2] + g_tan[2] * slide_substep_dt_s,
+                )
+                cur_pos = (
+                    cur_pos[0] + cur_vel[0] * slide_substep_dt_s,
+                    cur_pos[1] + cur_vel[1] * slide_substep_dt_s,
+                    cur_pos[2] + cur_vel[2] * slide_substep_dt_s,
+                )
+                points.append(cur_pos)
+
+            pos = cur_pos
+            # carry tangent velocity forward — water leaves leaf edge with this v
+            vel = cur_vel
 
         if pos[2] <= pond_z_m:
             break
