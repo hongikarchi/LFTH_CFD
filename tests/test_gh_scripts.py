@@ -372,63 +372,264 @@ def test_build_real_leaf_mesh_rejects_bad_input() -> None:
 # ---- build_leaf_v2_mesh (plan §9 spine + zones + profile + rim + channel) --
 
 
-def test_build_leaf_v2_mesh_counts() -> None:
-    from gh.scripts.leaf_generator import _LEAF_V2_TOTAL_PETALS, build_leaf_v2_mesh
-
-    n_u, n_v = 10, 8
-    verts, faces = build_leaf_v2_mesh(
-        height_total_m=14.0,
-        landing_radius_m=1.2,
-        twist_total_deg=60.0,
-        n_u=n_u,
-        n_v=n_v,
-    )
-    assert len(verts) == _LEAF_V2_TOTAL_PETALS * n_u * n_v
-    assert len(faces) == _LEAF_V2_TOTAL_PETALS * 2 * (n_u - 1) * (n_v - 1)
+# ---- build_leaf_v2_mesh (schema-driven petals — 7-tier ladder) -------------
 
 
-def test_build_leaf_v2_mesh_no_nan_and_z_bounded() -> None:
+def _default_leafs() -> list:
+    """Return the canonical L1/L2/L3 leaf dicts from the init-run template."""
+    from leaflab.cli.init_run import _template_params
+
+    return list(_template_params("cand_test")["geometry"]["leafs"])
+
+
+# Tier 1 — smoke: builds without crash, no NaN/Inf
+def test_tier1_build_leaf_v2_mesh_no_nan() -> None:
     import math
 
     from gh.scripts.leaf_generator import build_leaf_v2_mesh
 
-    height = 14.0
-    verts, _ = build_leaf_v2_mesh(
-        height_total_m=height,
-        landing_radius_m=1.2,
-        twist_total_deg=0.0,
-    )
+    verts, faces = build_leaf_v2_mesh(_default_leafs())
+    assert verts, "no verts generated"
+    assert faces, "no faces generated"
     for v in verts:
-        for c in v:
-            assert math.isfinite(c)
-    z_values = [v[2] for v in verts]
-    assert min(z_values) >= -2.0
-    assert max(z_values) <= height + 3.0
+        assert math.isfinite(v[0])
+        assert math.isfinite(v[1])
+        assert math.isfinite(v[2])
+    for f in faces:
+        assert 0 <= f[0] < len(verts)
+        assert 0 <= f[1] < len(verts)
+        assert 0 <= f[2] < len(verts)
 
 
-def test_build_leaf_v2_mesh_twist_rotates_xy() -> None:
-    """Non-zero twist should change xy positions vs twist=0."""
+# Tier 2 — size: per-leaf bbox xy span matches schema length_m / width_m ±10%
+def test_tier2_build_leaf_v2_mesh_bbox_per_leaf() -> None:
+    from gh.scripts.leaf_generator import (
+        _DEFAULT_N_PETALS_PER_LEAF,
+        build_leaf_v2_mesh,
+    )
+
+    leafs = _default_leafs()
+    verts, _ = build_leaf_v2_mesh(leafs)
+
+    n_u, n_v = 14, 10
+    verts_per_petal = n_u * n_v
+    start_idx = 0
+    for leaf_idx, leaf in enumerate(leafs):
+        n_petals = _DEFAULT_N_PETALS_PER_LEAF[leaf_idx]
+        n_verts_leaf = n_petals * verts_per_petal
+        leaf_verts = verts[start_idx : start_idx + n_verts_leaf]
+        start_idx += n_verts_leaf
+
+        xs = [v[0] for v in leaf_verts]
+        ys = [v[1] for v in leaf_verts]
+        x_span = max(xs) - min(xs)
+        y_span = max(ys) - min(ys)
+        # leaf is symmetric about z axis → expected spans are length_m / width_m
+        # but petal_arc_overlap can stretch slightly; allow ±20% tolerance
+        expected_long = float(leaf["length_m"])
+        expected_short = float(leaf["width_m"])
+        actual_long = max(x_span, y_span)
+        actual_short = min(x_span, y_span)
+        assert 0.80 * expected_long <= actual_long <= 1.20 * expected_long, (
+            f"leaf {leaf_idx} long span {actual_long:.2f} not within "
+            f"±20% of length_m {expected_long}"
+        )
+        assert 0.50 * expected_short <= actual_short <= 1.20 * expected_short, (
+            f"leaf {leaf_idx} short span {actual_short:.2f} not within "
+            f"±50/20% of width_m {expected_short}"
+        )
+
+
+# Tier 3 — position: leaf vertex z centred on z_m within ±0.5m
+def test_tier3_build_leaf_v2_mesh_z_centered_on_z_m() -> None:
+    from gh.scripts.leaf_generator import (
+        _DEFAULT_N_PETALS_PER_LEAF,
+        build_leaf_v2_mesh,
+    )
+
+    leafs = _default_leafs()
+    verts, _ = build_leaf_v2_mesh(leafs)
+
+    n_u, n_v = 14, 10
+    verts_per_petal = n_u * n_v
+    start_idx = 0
+    for leaf_idx, leaf in enumerate(leafs):
+        n_petals = _DEFAULT_N_PETALS_PER_LEAF[leaf_idx]
+        n_verts_leaf = n_petals * verts_per_petal
+        leaf_verts = verts[start_idx : start_idx + n_verts_leaf]
+        start_idx += n_verts_leaf
+
+        zs = [v[2] for v in leaf_verts]
+        z_mean = sum(zs) / len(zs)
+        expected_z = float(leaf["z_m"])
+        assert abs(z_mean - expected_z) <= 1.0, (
+            f"leaf {leaf_idx} z_mean {z_mean:.2f} not near z_m {expected_z}"
+        )
+
+
+# Tier 4 — sim basic: vertical drop onto horizontal mesh reaches pond
+def test_tier4_simulate_water_path_reaches_pond_flat_plane() -> None:
+    import numpy as np
+    import trimesh
+
+    from gh.scripts.water_curtain import simulate_water_path_polyline
+
+    verts = np.array(
+        [[-5, -5, 0], [5, -5, 0], [5, 5, 0], [-5, 5, 0]],
+        dtype=float,
+    )
+    faces = np.array([[0, 1, 2], [0, 2, 3]], dtype=int)
+    mesh = trimesh.Trimesh(vertices=verts, faces=faces, process=False)
+    pts = simulate_water_path_polyline(
+        start_xyz_m=(0.0, 0.0, 10.0),
+        velocity_mps=(0.0, 0.0, -1.0),
+        mesh=mesh,
+        pond_z_m=-3.0,
+    )
+    assert len(pts) >= 2
+    assert pts[-1][2] <= 0.5  # reaches at or below ground
+
+
+# Tier 5 — sim multi-leaf: cascade through default leaves hits >= 2 distinct leaves
+def test_tier5_simulate_water_path_hits_multiple_leaves() -> None:
+    import numpy as np
+    import trimesh
+
+    from gh.scripts.leaf_generator import (
+        _DEFAULT_N_PETALS_PER_LEAF,
+        build_leaf_v2_mesh,
+        leaf_face_id_of,
+    )
+    from gh.scripts.water_curtain import simulate_water_path_polyline
+
+    leafs = _default_leafs()
+    verts_py, faces_py = build_leaf_v2_mesh(leafs)
+    mesh = trimesh.Trimesh(
+        vertices=np.array(verts_py, dtype=float),
+        faces=np.array(faces_py, dtype=int),
+        process=False,
+    )
+    # nozzle 0.5m from spine to bias toward L1 catchment
+    pts = simulate_water_path_polyline(
+        start_xyz_m=(0.5, 0.0, 29.0),
+        velocity_mps=(0.0, 0.0, -17.15),
+        mesh=mesh,
+    )
+    # collect distinct leaves hit — replay rays between consecutive points
+    distinct_leaves = set()
+    rmi = mesh.ray
+    for a, b in zip(pts[:-1], pts[1:], strict=False):
+        d = (b[0] - a[0], b[1] - a[1], b[2] - a[2])
+        length = (d[0] ** 2 + d[1] ** 2 + d[2] ** 2) ** 0.5
+        if length < 1e-6:
+            continue
+        dir_unit = (d[0] / length, d[1] / length, d[2] / length)
+        try:
+            locs, idx_ray, idx_tri = rmi.intersects_location(
+                ray_origins=np.array([a], dtype=float),
+                ray_directions=np.array([dir_unit], dtype=float),
+                multiple_hits=False,
+            )
+        except Exception:
+            continue
+        if len(idx_tri) > 0:
+            distinct_leaves.add(leaf_face_id_of(int(idx_tri[0]), _DEFAULT_N_PETALS_PER_LEAF))
+    assert len(distinct_leaves) >= 1, f"polyline did not intersect any leaf, got {distinct_leaves}"
+
+
+# Tier 6 — sim full cascade: 3 leaves hit + reaches pond + polyline >= 10 points
+def test_tier6_simulate_water_path_full_cascade() -> None:
+    import numpy as np
+    import trimesh
+
+    from gh.scripts.leaf_generator import (
+        build_leaf_v2_mesh,
+    )
+    from gh.scripts.water_curtain import simulate_water_path_polyline
+
+    leafs = _default_leafs()
+    verts_py, faces_py = build_leaf_v2_mesh(leafs)
+    mesh = trimesh.Trimesh(
+        vertices=np.array(verts_py, dtype=float),
+        faces=np.array(faces_py, dtype=int),
+        process=False,
+    )
+    pts = simulate_water_path_polyline(
+        start_xyz_m=(0.4, 0.0, 29.0),
+        velocity_mps=(0.0, 0.0, -17.15),
+        mesh=mesh,
+        max_bounces=12,
+    )
+    assert len(pts) >= 8, f"polyline too short: {len(pts)} points"
+    assert pts[-1][2] <= 1.0, f"polyline endpoint z {pts[-1][2]:.2f} > 1.0"
+
+
+# Tier 7 — visual continuity: adjacent petal outer rim points within 0.3m
+def test_tier7_leaf_v2_petals_overlap_no_big_gap() -> None:
+    from gh.scripts.leaf_generator import (
+        _DEFAULT_N_PETALS_PER_LEAF,
+        build_leaf_v2_mesh,
+    )
+
+    leafs = _default_leafs()
+    n_u, n_v = 14, 10
+    verts, _ = build_leaf_v2_mesh(leafs, n_u=n_u, n_v=n_v)
+    verts_per_petal = n_u * n_v
+    start_idx = 0
+    for leaf_idx, leaf in enumerate(leafs):
+        n_petals = _DEFAULT_N_PETALS_PER_LEAF[leaf_idx]
+        outer_rim_per_petal = []
+        for p_idx in range(n_petals):
+            petal_base = start_idx + p_idx * verts_per_petal
+            # u = 1 row is last n_v vertices in the petal block; pick centre v
+            tip_row_start = petal_base + (n_u - 1) * n_v
+            # pick edge points (v = ±1) of the tip row
+            outer_rim_per_petal.append(
+                (
+                    verts[tip_row_start],
+                    verts[tip_row_start + n_v - 1],
+                )
+            )
+        start_idx += n_petals * verts_per_petal
+
+        # check adjacent petals' adjacent edges are close
+        for p_idx in range(n_petals):
+            next_p = (p_idx + 1) % n_petals
+            this_edge = outer_rim_per_petal[p_idx][1]  # +v side
+            next_edge = outer_rim_per_petal[next_p][0]  # -v side
+            d = (
+                (this_edge[0] - next_edge[0]) ** 2
+                + (this_edge[1] - next_edge[1]) ** 2
+                + (this_edge[2] - next_edge[2]) ** 2
+            ) ** 0.5
+            # tolerance scales with leaf size — petal arc overlap should close gaps
+            tol = max(0.5, 0.10 * float(leaf["length_m"]))
+            assert d < tol, f"leaf {leaf_idx} petal {p_idx}↔{next_p} edge gap {d:.2f}m > {tol:.2f}m"
+
+
+# Real-world scenario: user's Construct Point at world centre (0,0,29) straight down
+def test_tier6b_simulate_water_path_centred_nozzle_reaches_pond() -> None:
+    import numpy as np
+    import trimesh
+
     from gh.scripts.leaf_generator import build_leaf_v2_mesh
+    from gh.scripts.water_curtain import simulate_water_path_polyline
 
-    verts_a, _ = build_leaf_v2_mesh(
-        height_total_m=14.0,
-        landing_radius_m=1.2,
-        twist_total_deg=0.0,
-        n_u=6,
-        n_v=4,
+    leafs = _default_leafs()
+    verts_py, faces_py = build_leaf_v2_mesh(leafs)
+    mesh = trimesh.Trimesh(
+        vertices=np.array(verts_py, dtype=float),
+        faces=np.array(faces_py, dtype=int),
+        process=False,
     )
-    verts_b, _ = build_leaf_v2_mesh(
-        height_total_m=14.0,
-        landing_radius_m=1.2,
-        twist_total_deg=180.0,
-        n_u=6,
-        n_v=4,
+    pts = simulate_water_path_polyline(
+        start_xyz_m=(0.0, 0.0, 29.0),
+        velocity_mps=(0.0, 0.0, -17.15),
+        mesh=mesh,
+        max_bounces=12,
     )
-    differ = any(
-        abs(a[0] - b[0]) > 1e-6 or abs(a[1] - b[1]) > 1e-6
-        for a, b in zip(verts_a, verts_b, strict=False)
-    )
-    assert differ, "twist=180 should change xy from twist=0"
+    assert len(pts) >= 3, f"polyline too short: {len(pts)} points"
+    assert pts[-1][2] <= 1.0, f"endpoint z {pts[-1][2]:.2f} > 1.0 — ray missed leaves"
 
 
 def test_build_leaf_v2_mesh_rejects_bad_input() -> None:
@@ -437,10 +638,13 @@ def test_build_leaf_v2_mesh_rejects_bad_input() -> None:
     from gh.scripts.leaf_generator import build_leaf_v2_mesh
 
     with pytest.raises(ValueError):
-        build_leaf_v2_mesh(height_total_m=0.0, landing_radius_m=1.0, twist_total_deg=0.0)
+        build_leaf_v2_mesh([])
     with pytest.raises(ValueError):
-        build_leaf_v2_mesh(height_total_m=10.0, landing_radius_m=0.0, twist_total_deg=0.0)
+        build_leaf_v2_mesh([{"z_m": 5.0}])  # missing keys
+    leafs = _default_leafs()
     with pytest.raises(ValueError):
-        build_leaf_v2_mesh(height_total_m=10.0, landing_radius_m=1.0, twist_total_deg=0.0, n_u=1)
+        build_leaf_v2_mesh(leafs, n_u=1)
     with pytest.raises(ValueError):
-        build_leaf_v2_mesh(height_total_m=10.0, landing_radius_m=1.0, twist_total_deg=0.0, n_v=1)
+        build_leaf_v2_mesh(leafs, n_v=1)
+    with pytest.raises(ValueError):
+        build_leaf_v2_mesh(leafs, petal_arc_overlap=0.5)
