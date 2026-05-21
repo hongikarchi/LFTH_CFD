@@ -391,10 +391,10 @@ def build_leaf_v2_mesh(
                     r_ellipse = (a * b / denom) if denom > 1e-12 else min(a, b)
                     r = u * r_ellipse
 
-                    # monotone outward-down slope: high at spine, low at tip.
-                    # Combined with pitch tilt, water slides outward without
-                    # getting trapped in a bowl.
-                    z_camber = camber_h * (1.0 - u * u)
+                    # concave-up flower cup: low at spine (u=0), high at rim
+                    # (u=1) — matches reference geometry (open bowls). Pitch
+                    # tilt drains water toward low side of cup → cascade.
+                    z_camber = camber_h * (u * u)
                     rim_factor = max(0.0, (abs(v_local) - 0.7) / 0.3)
                     z_rim = rim_height * rim_factor * rim_factor
                     ch_factor = math.exp(-(v_local * v_local) / 0.05) * width_taper
