@@ -61,13 +61,16 @@ class LeafParams(StrictModel):
 
 
 class GeometryParams(StrictModel):
-    leaf_count: int = Field(ge=1, le=12)
+    leaf_count: int = Field(ge=0, le=12)
     single_surface_intent: bool = True
     height_total_m: float = Field(gt=0, le=15.0)
     base_z_m: float = 0.0
     top_leaf_z_m: float
     spine: SpineParams
-    leafs: list[LeafParams] = Field(min_length=1)
+    leafs: list[LeafParams] = Field(default_factory=list)
+    # PR-G: when the mesh is supplied as a reference (no procedural leaves),
+    # record the source for reproducibility. None when no reference used.
+    source_mesh_path: str | None = None
 
     @model_validator(mode="after")
     def _check_cross_fields(self) -> GeometryParams:

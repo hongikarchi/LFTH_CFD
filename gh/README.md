@@ -99,55 +99,115 @@ import numpy as np
 
 ---
 
-## LeafGenerator.gh — water curtain + real leaf 가이드
+## LeafGenerator.gh — reference mesh + water sim + evaluator (PR-G)
 
-`.gh` 는 binary 라서 자동 생성 불가. 한 번 수동 빌드, 이후 git commit. `gh/scripts/leaf_generator.py` 와 `gh/scripts/water_curtain.py` 가 진짜 로직; GH 내부 Py3 컴포넌트는 thin wrapper.
+PR-G 부터 절차적 mesh 생성 (`build_*_mesh`) 폐기. **mesh 는 Rhino reference geometry 에서 GH 로 입력**. 4 개 Py3 컴포넌트로 분리:
+
+1. **mesh_loader** — Rhino Mesh → (verts, faces) JSON
+2. **water_sim** — mesh + nozzles → polylines + nozzles JSON
+3. **evaluator** — mesh + polylines → metrics JSON
+4. **export** — mesh + params + metrics → `runs/<id>/{params.json, leaf.stl, fast_metrics.json}`
+
+`.gh` 는 binary, 수동 빌드. 핵심 로직은 `gh/scripts/{mesh_io,water_sim,evaluator,leaf_generator,export_candidate}.py`. Py3 컴포넌트는 thin wrapper + `importlib.reload` 로 자동 hot-pickup.
 
 ### 컴포넌트 (캔버스 배치)
 
 | 역할 | 컴포넌트 | 기본값 권장 |
 |------|---------|------------|
+| `reference_meshes` | Geometry param (list, Mesh) | Rhino layer 꽃_1 + 꽃대 의 mesh 들 reference |
 | `height_total_m` | Number Slider | range 5–15, value 14.0 |
 | `landing_radius_m` | Number Slider | range 0.5–3.0, value 1.2 |
 | `twist_total_deg` | Number Slider | range -180–180, value 60.0 |
 | `candidate_id` | Panel (text) | `cand_0001` |
-| `nozzle_points` | Point param (multi-input) | Rhino 캔버스에서 직접 점 배치 또는 Construct Point + 3 sliders |
+| `nozzle_points` | Point param (multi-input) | Construct Point + 3 sliders 권장 |
 | `flow_rate_lpm` | Number Slider | range 10–100, value 45.0 |
-| `nozzle_tilt_deg` | Number Slider | range 0–60, value 0 (수직). >0 = 수평 방향 분사 |
-| `nozzle_azimuth_deg` | Number Slider | range -180–180, value 0. tilt 방향 (0=+X, 90=+Y) |
-| `build` | Python 3 Script | 8 input / 4 output: `a=mesh`, `b=params_json`, `c=candidate_id`, `d=curtain_curves` |
-| `export` | Python 3 Script | 3 input: `mesh`, `params_dict` (a.k.a. b from build), `candidate_id` / 1 output: `a=summary` |
-| `summary` | Panel | export 결과 표시 |
+| `nozzle_tilt_deg` | Number Slider | range 0–60, value 0 (수직) |
+| `nozzle_azimuth_deg` | Number Slider | range -180–180, value 0 |
+| `mesh_loader` | Python 3 Script | 1 input → 3 output: `preview_mesh`, `mesh_json`, `mesh_summary` |
+| `water_sim` | Python 3 Script | 5 input → 2 output: `curtain_curves`, `nozzles_json` |
+| `evaluator` | Python 3 Script | 2 input → 2 output: `metrics_json`, `summary_text` |
+| `export` | Python 3 Script | 5 input → 1 output: `export_summary` |
+| `mesh_summary panel`, `metric panel`, `export panel` | Panel | 각 컴포넌트 출력 표시 |
 
 ### 와이어
 
 ```
-height_total_m ───┐
-landing_radius_m ─┼→ build.input(0..2)
-twist_total_deg ──┘
-candidate_id ────→ build.candidate_id
-nozzle_points ───→ build.nozzle_points
-flow_rate_lpm ───→ build.flow_rate_lpm
-nozzle_tilt_deg ─→ build.nozzle_tilt_deg
-nozzle_azimuth_deg → build.nozzle_azimuth_deg
+reference_meshes ──→ mesh_loader.reference_meshes
+                       ├── preview_mesh ──→ (Rhino preview)
+                       ├── mesh_json    ──→ water_sim.mesh_json + evaluator.mesh_json + export.mesh_json
+                       └── mesh_summary ──→ mesh_summary panel
 
-build.a (mesh)       ─→ export.mesh
-build.b (params_json) → export.params_dict
-build.c (candidate_id)→ export.candidate_id
-build.d (curtain_curves) → preview only (그 자체로 캔버스에 표시)
+nozzle_points ─────→ water_sim.nozzle_points
+flow_rate_lpm ─────→ water_sim.flow_rate_lpm
+nozzle_tilt_deg ───→ water_sim.tilt_deg
+nozzle_azimuth_deg → water_sim.azimuth_deg
+   water_sim.curtain_curves ──→ (Rhino preview polylines)
+   water_sim.nozzles_json   ──→ evaluator.nozzles_json + export.nozzles_json
 
-export.a (summary) ──→ summary panel
+evaluator.metrics_json ──→ export.metrics_json
+evaluator.summary_text ──→ metric panel
+
+height_total_m, landing_radius_m, twist_total_deg, candidate_id ──→ export.*
+export.export_summary ──→ export panel
 ```
 
-### `build` 컴포넌트 코드 (paste)
+### 1. `mesh_loader` 코드 (paste)
 
-Rhino doc 단위(mm/m 등)와 무관하게 mesh + curtain curves 가 실제 크기로 보이도록 `Rhino.RhinoMath.UnitScale` 사용.
+```python
+import sys, pathlib, json, importlib
+import Rhino, Rhino.Geometry as rg
+
+REPO_ROOT = pathlib.Path(r"C:\Users\user\Documents\LFTH_CFD")
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+import gh.scripts.mesh_io
+importlib.reload(gh.scripts.mesh_io)
+from gh.scripts.mesh_io import rhino_mesh_to_tri_data, mesh_summary
+
+doc = Rhino.RhinoDoc.ActiveDoc
+m_to_doc = Rhino.RhinoMath.UnitScale(Rhino.UnitSystem.Meters, doc.ModelUnitSystem)
+m_to_doc = m_to_doc if m_to_doc != 0 else 1.0
+doc_to_m = 1.0 / m_to_doc
+
+# reference_meshes: List[rg.Mesh] (multi-input Geometry param)
+meshes_dump = []
+for m in reference_meshes:
+    verts = [(v.X, v.Y, v.Z) for v in m.Vertices]
+    faces = []
+    for f in m.Faces:
+        if f.IsQuad:
+            faces.append((f.A, f.B, f.C))
+            faces.append((f.A, f.C, f.D))
+        else:
+            faces.append((f.A, f.B, f.C))
+    meshes_dump.append({"verts": verts, "faces": faces})
+
+verts_m, faces_m = rhino_mesh_to_tri_data(meshes_dump, doc_to_m)
+summary = mesh_summary(verts_m, faces_m)
+
+# preview mesh in doc unit
+preview = rg.Mesh()
+for v in verts_m:
+    preview.Vertices.Add(v[0] * m_to_doc, v[1] * m_to_doc, v[2] * m_to_doc)
+for f in faces_m:
+    preview.Faces.AddFace(f[0], f[1], f[2])
+preview.Normals.ComputeNormals()
+preview.Compact()
+
+a = preview
+b = json.dumps({"verts": verts_m, "faces": faces_m})
+c = "verts={} faces={} bbox_m={}".format(
+    summary["vert_count"], summary["face_count"], summary["bbox_m"]
+)
+```
+
+### 2. `water_sim` 코드 (paste)
 
 ```python
 # r: trimesh
 import sys, pathlib, json, importlib
-import Rhino
-import Rhino.Geometry as rg
+import Rhino, Rhino.Geometry as rg
 import trimesh
 import numpy as np
 
@@ -155,13 +215,9 @@ REPO_ROOT = pathlib.Path(r"C:\Users\user\Documents\LFTH_CFD")
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-# hot-reload — picks up gh/scripts/*.py edits without Rhino restart
-import gh.scripts.leaf_generator
-import gh.scripts.water_curtain
-importlib.reload(gh.scripts.leaf_generator)
-importlib.reload(gh.scripts.water_curtain)
-from gh.scripts.leaf_generator import build_leaf_v2_mesh, build_params_dict
-from gh.scripts.water_curtain import (
+import gh.scripts.water_sim
+importlib.reload(gh.scripts.water_sim)
+from gh.scripts.water_sim import (
     nozzles_from_points, velocity_from_tilt, simulate_water_path_polyline,
 )
 
@@ -170,103 +226,98 @@ m_to_doc = Rhino.RhinoMath.UnitScale(Rhino.UnitSystem.Meters, doc.ModelUnitSyste
 m_to_doc = m_to_doc if m_to_doc != 0 else 1.0
 doc_to_m = 1.0 / m_to_doc
 
-# doc-unit Points → meters (water release points)
-points_xyz = [(p.X * doc_to_m, p.Y * doc_to_m, p.Z * doc_to_m) for p in nozzle_points]
-
-# tilt-driven initial velocity (shared across all nozzles)
-fall_h_default = 15.0
-velocity_shared = velocity_from_tilt(
-    fall_height_m=fall_h_default,
-    tilt_deg=nozzle_tilt_deg,
-    azimuth_deg=nozzle_azimuth_deg,
-)
-nozzles = nozzles_from_points(
-    points_xyz, flow_rate_lpm, velocity_mps_shared=velocity_shared
-)
-
-# build params dict (provides LeafParams list with length_m/width_m/camber/...)
-params_dict = build_params_dict(
-    candidate_id, height_total_m, landing_radius_m, twist_total_deg, nozzles=nozzles
-)
-fall_h = params_dict["water"]["fall_height_m"]
-
-# leaf mesh — schema-driven from params_dict["geometry"]["leafs"]
-verts, faces = build_leaf_v2_mesh(params_dict["geometry"]["leafs"])
-
-# Rhino preview mesh — meter→doc scale
-mesh = rg.Mesh()
-for v in verts:
-    mesh.Vertices.Add(v[0] * m_to_doc, v[1] * m_to_doc, v[2] * m_to_doc)
-for f in faces:
-    mesh.Faces.AddFace(f[0], f[1], f[2])
-mesh.Normals.ComputeNormals()
-mesh.Compact()
-
-# trimesh model in METERS (for raycast through leaves)
-tm_mesh = trimesh.Trimesh(
-    vertices=np.asarray(verts, dtype=float),
-    faces=np.asarray(faces, dtype=int),
+mesh_data = json.loads(mesh_json)
+tm = trimesh.Trimesh(
+    vertices=np.asarray(mesh_data["verts"], dtype=float),
+    faces=np.asarray(mesh_data["faces"], dtype=int),
     process=False,
 )
 
-# Water flow polylines — simulate cascade (bounce / slide) through leaves
-curtain_curves = []
-for nz in nozzles:
-    sp_m = tuple(nz["position"])
-    vel = tuple(nz["velocity_mps"]) if nz["velocity_mps"] is not None else (0.0, 0.0, -17.15)
-    pts_m = simulate_water_path_polyline(sp_m, vel, tm_mesh, max_bounces=12)
-    polyline = rg.Polyline(
-        [rg.Point3d(x * m_to_doc, y * m_to_doc, z * m_to_doc) for (x, y, z) in pts_m]
-    )
-    curtain_curves.append(polyline.ToNurbsCurve())
+points_xyz = [(p.X * doc_to_m, p.Y * doc_to_m, p.Z * doc_to_m) for p in nozzle_points]
+velocity_shared = velocity_from_tilt(
+    fall_height_m=15.0, tilt_deg=tilt_deg, azimuth_deg=azimuth_deg,
+)
+nozzles = nozzles_from_points(
+    points_xyz, flow_rate_lpm, velocity_mps_shared=velocity_shared,
+)
 
-a = mesh
-b = json.dumps(params_dict)
-c = candidate_id
-d = curtain_curves
+curves = []
+polylines_m = []
+for nz in nozzles:
+    sp = tuple(nz["position"])
+    vel = tuple(nz["velocity_mps"]) if nz["velocity_mps"] else (0.0, 0.0, -17.15)
+    pts_m = simulate_water_path_polyline(sp, vel, tm, max_bounces=20)
+    polylines_m.append(pts_m)
+    poly = rg.Polyline([rg.Point3d(x * m_to_doc, y * m_to_doc, z * m_to_doc) for (x, y, z) in pts_m])
+    curves.append(poly.ToNurbsCurve())
+
+a = curves
+b = json.dumps({"nozzles": nozzles, "polylines_m": polylines_m})
 ```
 
-### `export` 컴포넌트 코드 (paste)
-
-mesh.Vertices 는 doc-unit, STL/params 는 항상 meter — 역변환 필요.
+### 3. `evaluator` 코드 (paste)
 
 ```python
-# r: trimesh
 import sys, pathlib, json, importlib
-import Rhino
 
 REPO_ROOT = pathlib.Path(r"C:\Users\user\Documents\LFTH_CFD")
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-# hot-reload
+import gh.scripts.evaluator
+importlib.reload(gh.scripts.evaluator)
+from gh.scripts.evaluator import evaluate
+
+mesh_data = json.loads(mesh_json)
+sim_data = json.loads(nozzles_json)
+
+metrics = evaluate(
+    mesh_data["verts"], mesh_data["faces"],
+    sim_data["polylines_m"], sim_data["nozzles"],
+)
+
+a = json.dumps(metrics)
+b = "drop_avg={:.2f}m, xy_spread={:.2f}m, pond_cap={:.2f}, impact={:.2f}".format(
+    metrics["cascade_drop_m_avg"], metrics["xy_spread_m_avg"],
+    metrics["pond_capture_ratio"], metrics["normal_impact_avg"],
+)
+```
+
+### 4. `export` 코드 (paste)
+
+```python
+# r: trimesh
+import sys, pathlib, json, importlib
+
+REPO_ROOT = pathlib.Path(r"C:\Users\user\Documents\LFTH_CFD")
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+import gh.scripts.leaf_generator
 import gh.scripts.export_candidate
+importlib.reload(gh.scripts.leaf_generator)
 importlib.reload(gh.scripts.export_candidate)
+from gh.scripts.leaf_generator import build_params_dict
 from gh.scripts.export_candidate import export_candidate
 
-doc = Rhino.RhinoDoc.ActiveDoc
-m_to_doc = Rhino.RhinoMath.UnitScale(Rhino.UnitSystem.Meters, doc.ModelUnitSystem)
-m_to_doc = m_to_doc if m_to_doc != 0 else 1.0
-doc_to_m = 1.0 / m_to_doc
+mesh_data = json.loads(mesh_json)
+sim_data = json.loads(nozzles_json)
 
-params_dict = json.loads(params_dict)
-
-verts = []
-for v in mesh.Vertices:
-    verts.append((v.X * doc_to_m, v.Y * doc_to_m, v.Z * doc_to_m))
-faces = []
-for f in mesh.Faces:
-    if f.IsQuad:
-        faces.append((f.A, f.B, f.C))
-        faces.append((f.A, f.C, f.D))
-    else:
-        faces.append((f.A, f.B, f.C))
+params_dict = build_params_dict(
+    candidate_id, height_total_m, landing_radius_m, twist_total_deg,
+    nozzles=sim_data["nozzles"], source_mesh_path="rhino:reference_meshes",
+)
 
 out_dir = REPO_ROOT / "runs" / candidate_id
-summary = export_candidate(verts, faces, params_dict, out_dir)
+summary = export_candidate(mesh_data["verts"], mesh_data["faces"], params_dict, out_dir)
+
+# also write metrics.json for fast-sim diff
+if metrics_json:
+    metrics = json.loads(metrics_json)
+    (out_dir / "rough_cfd_metrics.json").write_text(json.dumps(metrics, indent=2), encoding="utf-8")
 
 a = "OK | {} | tri={} | vert={}".format(
-    summary["stl_path"], summary["triangle_count"], summary["vertex_count"]
+    summary["stl_path"], summary["triangle_count"], summary["vertex_count"],
 )
 ```
 
