@@ -21,6 +21,9 @@ build/
 # Local harness (개인 설정)
 .claude/settings.local.json
 
+# MCP per-machine config (협업자 머신마다 Python path / Rhino 유무 다름)
+.mcp.json
+
 # Rhino/GH 부산물
 *.3dmBak
 *.ghuser

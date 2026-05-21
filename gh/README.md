@@ -109,3 +109,87 @@ ruff check --target-version py39 gh/scripts/  # 3.9 호환 확인
 ```bash
 uv run ruff check --target-version py39 gh/scripts/
 ```
+
+---
+
+## MCP 자동화 — alfredatnycu/grasshopper-mcp
+
+이 프로젝트는 Claude Code가 Grasshopper 정의를 자동 빌드/수정할 수 있도록 `alfredatnycu/grasshopper-mcp` 사용 가능. 선택적, per-machine 설정.
+
+### 무엇
+
+- GH 안에 `GH_MCP` 컴포넌트 + Python bridge 서버
+- Claude (MCP client) → bridge → GH 컴포넌트 생성/연결/Python 코드 주입
+- 자세한 내용: https://github.com/alfredatnycu/grasshopper-mcp
+
+### 설치 (per-machine)
+
+#### A. Python bridge
+
+leaflab venv 밖에서 (글로벌 또는 별도 venv):
+
+```powershell
+pip install grasshopper-mcp
+# entry point 확인
+python -m grasshopper_mcp.bridge --help
+```
+
+#### B. `.gha` 컴포넌트 찾아서 복사
+
+```powershell
+pip show grasshopper-mcp                                                # Location 라인 확인
+$loc = (pip show grasshopper-mcp | Select-String "^Location:").ToString().Split(":",2)[1].Trim()
+Get-ChildItem -Path $loc -Recurse -Filter "GH_MCP.gha"                  # 정확한 경로 찾기
+Copy-Item "<found-path>\GH_MCP.gha" "$env:APPDATA\Grasshopper\Libraries\"
+```
+
+`.gha`가 pip 패키지에 없으면 GitHub releases에서 직접: https://github.com/alfredatnycu/grasshopper-mcp/releases
+
+Rhino 8 재시작 → GH 열고 컴포넌트 검색 (`GH_MCP`).
+
+#### C. `.mcp.json` 로컬 (gitignore'd, 커밋 X)
+
+repo 루트에 `.mcp.json` 작성:
+
+```json
+{
+  "mcpServers": {
+    "grasshopper": {
+      "command": "<python.exe in pip env>",
+      "args": ["-m", "grasshopper_mcp.bridge"]
+    }
+  }
+}
+```
+
+`<python.exe in pip env>`는 Step A pip 실행 환경의 python 절대경로. 예:
+`C:\Users\<user>\AppData\Local\Programs\Python\Python312\python.exe` 또는 venv path.
+
+#### D. Claude Code 재시작 + 검증
+
+1. Claude Code 종료 후 재시작
+2. Claude tool 목록에 `mcp__grasshopper__*` 등장 확인
+3. Rhino 8 + Grasshopper 열기
+4. 빈 GH 캔버스에 `GH_MCP` 컴포넌트 배치
+5. Claude로 trivial MCP call 시도 (예: 캔버스 상태 조회) → 응답 정상이면 OK
+
+### 사용 패턴 (Claude 측)
+
+Claude가 MCP tool 사용해서:
+1. 새 GH 정의 (또는 기존 .gh 수정)
+2. Python 3 Script 컴포넌트 생성 + 코드 텍스트 주입
+3. 컴포넌트 간 wire 연결
+4. 결과를 `.gh` 파일로 저장
+
+사용자는 Rhino에서 시각 확인 + slider 조정.
+
+### 트러블슈팅
+
+- **Claude 재시작 후 mcp tool 안 보임**: `.mcp.json` 의 command 경로 확인. PATH 통과 안 됐을 가능성.
+- **GH_MCP 컴포넌트 안 보임**: `%APPDATA%\Grasshopper\Libraries\` 에 .gha 있는지 확인. Rhino 완전 종료 후 재시작.
+- **bridge 연결 실패**: GH_MCP 컴포넌트가 활성화돼있는지 확인. 컴포넌트 우클릭 → enable.
+- **Python 3.9 호환성**: bridge는 별도 Python 환경. Rhino 8 임베디드 CPython 과 무관.
+
+### 협업자 노트
+
+협업자 머신에 Rhino 없으면 MCP 사용 불가. `.mcp.json` 은 gitignore — 각자 설치 시 작성. 협업자가 Rhino 사용 시 위 가이드 따라 셋업.

@@ -51,6 +51,41 @@
 - Rhino/GH: `gh/` (외부 .py import 패턴, 파일 경계 통신)
 - WSL2 OpenFOAM: Phase F 이후 (지금 없음)
 
+## 실행 전 요약표 (필수)
+
+substantive 작업 시작 전, 표 먼저 출력:
+
+| Step | Agent/Model | Files | Scope | Depends on |
+
+목적: intent + scope + 어느 파일 + 어느 agent 명시. 정밀 토큰 예측 아님.
+
+substantive ≠ tweaks / typos. substantive ≈ 새 파일, 다중 파일 수정, 새 기능, refactor, schema 변경.
+
+scope 단계:
+- **small**: 단일 파일 edit / 1~2 line / 기존 시그니처 변경
+- **medium**: 새 모듈 + 테스트 / CLI 명령 추가
+- **large**: 멀티 파일 refactor / 외부 도구 연동 / 새 architecture
+
+실행 중 scope 크게 빗나가면 surface ("step 7 estimated medium → actual large because X").
+
+## Agent 위임 패턴
+
+- **Opus (main thread)**: 계획, 설계, 큰 결정, plan mode, advisor 호출
+- **cavecrew-builder (Sonnet)**: 1~2 파일 surgical edit. 명확한 지시 + 파일 경로 제공
+- **cavecrew-investigator (Sonnet)**: 코드 위치, 함수 추적
+- **cavecrew-reviewer (Sonnet)**: PR/diff 리뷰
+- **Plan (Opus)**: 큰 구현 설계
+
+원칙:
+- 단순 surgical edit → cavecrew-builder
+- 다중 무관 작업 → 병렬 (한 메시지에 여러 Agent call)
+- 의존성 있는 작업 → 순차
+- 깊은 추론 / 트레이드오프 / 새 디자인 → Opus 직접
+
+## 병렬 실행
+
+독립 작업은 **한 메시지 안에 여러 Agent tool call**. 토큰 동시 소모 → 시간 단축. 의존성 있으면 순차.
+
 ## 작업 추적 (영구 문서 없음 정책)
 
 - Phase 진행 상황 문서는 **만들지 않음** (stale 방지)
