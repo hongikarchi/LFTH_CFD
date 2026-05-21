@@ -537,17 +537,20 @@ def test_tier5_simulate_water_path_hits_multiple_leaves() -> None:
     assert len(distinct_leaves) >= 1, f"polyline did not intersect any leaf, got {distinct_leaves}"
 
 
-# Tier 6 — sim full cascade: 3 leaves hit + reaches pond + polyline >= 10 points
+# Tier 6 — full cascade: ≥4 of 6 leaves hit + reaches pond + ≥ 8 sampled pts
 def test_tier6_simulate_water_path_full_cascade() -> None:
     import numpy as np
     import trimesh
 
     from gh.scripts.leaf_generator import (
+        _DEFAULT_N_PETALS_PER_LEAF,
+        _default_leaves,
         build_leaf_v2_mesh,
+        leaf_face_id_of,
     )
     from gh.scripts.water_curtain import simulate_water_path_polyline
 
-    leafs = _default_leafs()
+    leafs = _default_leaves(height_total_m=15.0, landing_radius_m=1.5)
     verts_py, faces_py = build_leaf_v2_mesh(leafs)
     mesh = trimesh.Trimesh(
         vertices=np.array(verts_py, dtype=float),
@@ -555,13 +558,38 @@ def test_tier6_simulate_water_path_full_cascade() -> None:
         process=False,
     )
     pts = simulate_water_path_polyline(
-        start_xyz_m=(0.4, 0.0, 29.0),
+        start_xyz_m=(0.5, 0.0, 29.0),
         velocity_mps=(0.0, 0.0, -17.15),
         mesh=mesh,
-        max_bounces=12,
+        max_bounces=15,
     )
     assert len(pts) >= 8, f"polyline too short: {len(pts)} points"
     assert pts[-1][2] <= 1.0, f"polyline endpoint z {pts[-1][2]:.2f} > 1.0"
+
+    # ≥4 of 6 leaves hit — real cascade through reference-style stack
+    distinct_leaves: set[int] = set()
+    rmi = mesh.ray
+    for a, b in zip(pts[:-1], pts[1:], strict=False):
+        d = (b[0] - a[0], b[1] - a[1], b[2] - a[2])
+        length = (d[0] ** 2 + d[1] ** 2 + d[2] ** 2) ** 0.5
+        if length < 1e-6:
+            continue
+        dir_unit = (d[0] / length, d[1] / length, d[2] / length)
+        try:
+            _locs, _ir, idx_tri = rmi.intersects_location(
+                ray_origins=np.array([a], dtype=float),
+                ray_directions=np.array([dir_unit], dtype=float),
+                multiple_hits=False,
+            )
+        except Exception:
+            continue
+        if len(idx_tri) > 0:
+            distinct_leaves.add(
+                leaf_face_id_of(int(idx_tri[0]), _DEFAULT_N_PETALS_PER_LEAF)
+            )
+    assert len(distinct_leaves) >= 4, (
+        f"expected >= 4 of 6 leaves hit (real cascade), got {sorted(distinct_leaves)}"
+    )
 
 
 # Tier 7 — visual continuity: adjacent petal outer rim points within 0.3m
