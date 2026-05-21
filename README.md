@@ -61,7 +61,7 @@ LFTH_CFD/
 ├── configs/              # 기본 설정 JSON
 ├── docs/plans/           # 설계 결정 스냅샷
 ├── runs/                 # gitignore — 후보별 데이터 (재생성 가능)
-└── external_data/        # gitignore — 대용량 외부 스토리지 (rclone 동기화)
+└── external_data/        # gitignore — 회사 서버 SMB share 마운트 위치
 ```
 
 ## 핵심 규칙
@@ -73,6 +73,37 @@ LFTH_CFD/
 - `.gh` 파일 수정 전 단일 owner 확인 (binary diff 충돌 위험)
 - 대용량 파일 (STL, MP4, OpenFOAM 결과) 은 `external_data/` 경유, git에 안 올림
 
+## 외부 데이터 (대용량 파일)
+
+STL, OpenFOAM 결과, MP4 렌더 등 대용량 파일은 git에 안 올림. 회사 SMB share에 보관.
+
+**SMB host는 머신마다 다를 수 있음**:
+- DNS 풀리는 머신: `\\Lifethings\Lifethings_02\PROJECTS\2026 Project\2605-서부티앤디 건축물 미술작품\06_3D`
+- DNS 안 풀리는 머신: `\\192.168.0.100\Lifethings_02\PROJECTS\2026 Project\...`
+
+(정확한 하위 폴더는 TBD)
+
+### 셋업 (per-machine)
+
+자기 머신에 맞는 경로를 환경 변수로 설정:
+
+```powershell
+# 자기 머신에서 풀리는 경로 확인 후
+[Environment]::SetEnvironmentVariable("LEAFLAB_EXTERNAL_ROOT",
+  "\\Lifethings\Lifethings_02\PROJECTS\2026 Project\2605-서부티앤디 건축물 미술작품\06_3D",
+  "User")
+```
+
+새 PowerShell에서 `$env:LEAFLAB_EXTERNAL_ROOT` 로 확인.
+
+### 접근 옵션
+
+1. **UNC 경로 직접 사용** (회사망 내 가장 단순)
+2. **네트워크 드라이브 매핑**: `net use Z: \\<host>\Lifethings_02 /persistent:yes`
+3. **로컬 미러 (오프라인 작업용)**: `.\scripts\sync_external.ps1 pull`
+
+후보 부산물은 `$LEAFLAB_EXTERNAL_ROOT/leaf-water-lab/<candidate_id>/` 하위에 정리. 자세한 내용 `CONTRIBUTING.md` 참조.
+
 ## 개발
 
 `CONTRIBUTING.md` 참조.
@@ -82,7 +113,7 @@ LFTH_CFD/
 GitHub Issues + Milestones로 추적. 영구 phase 문서는 만들지 않음 (stale 방지).
 
 ```bash
-gh issue list --milestone "Phase A — 인프라"
+gh issue list --milestone "Phase B - Schema + GH Bridge"
 gh issue list --label in-progress
 ```
 

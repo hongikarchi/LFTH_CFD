@@ -61,7 +61,21 @@ gh issue list --assignee @me --state open
 ## 대용량 파일 정책
 
 - `runs/` 와 `external_data/` 는 gitignore
-- STL/MP4/CFD 결과는 rclone으로 Drive/Dropbox 동기화 (`scripts/sync_external.sh`)
+- STL/MP4/CFD 결과는 회사 SMB share에 보관
+- **SMB host는 머신마다 다를 수 있음**:
+  - DNS 풀리는 머신: `\\Lifethings\Lifethings_02\PROJECTS\2026 Project\2605-서부티앤디 건축물 미술작품\06_3D`
+  - DNS 안 풀리는 머신: `\\192.168.0.100\Lifethings_02\PROJECTS\2026 Project\...`
+  - (정확한 하위 폴더는 TBD)
+- **per-machine 환경 변수 사용 권장**:
+  ```powershell
+  [Environment]::SetEnvironmentVariable("LEAFLAB_EXTERNAL_ROOT", "<자기 머신에서 풀리는 경로>", "User")
+  ```
+- 코드/스크립트는 `$env:LEAFLAB_EXTERNAL_ROOT` 만 참조 (하드코딩 금지)
+- 접근:
+  - UNC 경로 직접 사용, 또는
+  - 네트워크 드라이브 매핑: `net use Z: \\<host>\Lifethings_02`, 또는
+  - 오프라인 작업 시 로컬 미러: `scripts/sync_external.ps1 pull`
+- 후보 부산물 구조: `$LEAFLAB_EXTERNAL_ROOT/leaf-water-lab/<candidate_id>/{leaf.stl,openfoam_run,blender_renders,...}`
 - 절대 git LFS / git add 금지
 
 ## Conflict 처리

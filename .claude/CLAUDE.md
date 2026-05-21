@@ -34,7 +34,10 @@
   - `gh/scripts/`는 Python 3.9 문법 (`match`, `X | Y` 타입, `Self` 등 금지)
   - `leaflab/`은 Python 3.11+ 자유롭게
 - **`.gh` 파일 수정 전 사용자 confirm 필수** (binary diff 충돌 위험)
-- **외부 stl/mp4는 `external_data/` (gitignore)**. 절대 git add 금지.
+- **외부 stl/mp4는 회사 SMB share** (gitignore). 절대 git add 금지.
+  - 경로는 `$env:LEAFLAB_EXTERNAL_ROOT` 환경 변수로 per-machine 설정.
+  - 코드/스크립트는 이 변수만 참조 (하드코딩 금지).
+  - 자세한 내용 `README.md` / `CONTRIBUTING.md`.
 
 ## 코드 스타일
 
