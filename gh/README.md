@@ -148,6 +148,8 @@ Rhino doc 단위(mm/m 등)와 무관하게 mesh + curtain curves 가 실제 크�
 import sys, pathlib, json, importlib
 import Rhino
 import Rhino.Geometry as rg
+import trimesh
+import numpy as np
 
 REPO_ROOT = pathlib.Path(r"C:\Users\user\Documents\LFTH_CFD")
 if str(REPO_ROOT) not in sys.path:
@@ -160,7 +162,7 @@ importlib.reload(gh.scripts.leaf_generator)
 importlib.reload(gh.scripts.water_curtain)
 from gh.scripts.leaf_generator import build_leaf_v2_mesh, build_params_dict
 from gh.scripts.water_curtain import (
-    nozzles_from_points, fall_trajectory_polyline, velocity_from_tilt,
+    nozzles_from_points, velocity_from_tilt, simulate_water_path_polyline,
 )
 
 doc = Rhino.RhinoDoc.ActiveDoc
@@ -168,13 +170,10 @@ m_to_doc = Rhino.RhinoMath.UnitScale(Rhino.UnitSystem.Meters, doc.ModelUnitSyste
 m_to_doc = m_to_doc if m_to_doc != 0 else 1.0
 doc_to_m = 1.0 / m_to_doc
 
-verts, faces = build_leaf_v2_mesh(height_total_m, landing_radius_m, twist_total_deg)
-
-# doc-unit Points → meters
+# doc-unit Points → meters (water release points)
 points_xyz = [(p.X * doc_to_m, p.Y * doc_to_m, p.Z * doc_to_m) for p in nozzle_points]
 
-# tilt-driven initial velocity (shared across all nozzles); fall_height
-# is read from build_params_dict default (15 m) since it's not a slider.
+# tilt-driven initial velocity (shared across all nozzles)
 fall_h_default = 15.0
 velocity_shared = velocity_from_tilt(
     fall_height_m=fall_h_default,
@@ -185,12 +184,16 @@ nozzles = nozzles_from_points(
     points_xyz, flow_rate_lpm, velocity_mps_shared=velocity_shared
 )
 
+# build params dict (provides LeafParams list with length_m/width_m/camber/...)
 params_dict = build_params_dict(
     candidate_id, height_total_m, landing_radius_m, twist_total_deg, nozzles=nozzles
 )
 fall_h = params_dict["water"]["fall_height_m"]
 
-# Rhino preview mesh - meter→doc scale
+# leaf mesh — schema-driven from params_dict["geometry"]["leafs"]
+verts, faces = build_leaf_v2_mesh(params_dict["geometry"]["leafs"])
+
+# Rhino preview mesh — meter→doc scale
 mesh = rg.Mesh()
 for v in verts:
     mesh.Vertices.Add(v[0] * m_to_doc, v[1] * m_to_doc, v[2] * m_to_doc)
@@ -199,13 +202,19 @@ for f in faces:
 mesh.Normals.ComputeNormals()
 mesh.Compact()
 
-# Free-fall preview polylines (one per nozzle, meter→doc scale).
-# Parabolic curve when nozzle_tilt_deg > 0; straight vertical otherwise.
+# trimesh model in METERS (for raycast through leaves)
+tm_mesh = trimesh.Trimesh(
+    vertices=np.asarray(verts, dtype=float),
+    faces=np.asarray(faces, dtype=int),
+    process=False,
+)
+
+# Water flow polylines — simulate cascade (bounce / slide) through leaves
 curtain_curves = []
 for nz in nozzles:
     sp_m = tuple(nz["position"])
-    vel = tuple(nz["velocity_mps"]) if nz["velocity_mps"] is not None else None
-    pts_m = fall_trajectory_polyline(sp_m, fall_h, velocity_mps=vel, n_samples=20)
+    vel = tuple(nz["velocity_mps"]) if nz["velocity_mps"] is not None else (0.0, 0.0, -17.15)
+    pts_m = simulate_water_path_polyline(sp_m, vel, tm_mesh, max_bounces=12)
     polyline = rg.Polyline(
         [rg.Point3d(x * m_to_doc, y * m_to_doc, z * m_to_doc) for (x, y, z) in pts_m]
     )

@@ -32,6 +32,13 @@ class SpineParams(StrictModel):
 
 
 class LeafParams(StrictModel):
+    """Per-leaf geometry. z_m is the horizontal-centre height (m).
+
+    length_m and width_m are the leaf's horizontal long-axis and
+    short-axis diameters in meters; the leaf plate is roughly an
+    ellipse of those dimensions, centred at (0, 0, z_m).
+    """
+
     leaf_id: str
     z_m: float
     length_m: float = Field(gt=0)

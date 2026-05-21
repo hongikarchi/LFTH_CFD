@@ -149,17 +149,12 @@ def build_real_leaf_mesh(
 
 
 # ---------------------------------------------------------------------------
-# build_leaf_v2_mesh — plan §9 pipeline (spine + zones + profile + rim + channel)
+# build_leaf_v2_mesh — schema-driven petal mesh (plan §9 sizes from LeafParams)
 # ---------------------------------------------------------------------------
 
-# (t_center, n_petals, length_factor, width_factor, camber_factor,
-#  rim_h_factor, channel_depth_factor, pitch_deg)
-_LEAF_V2_ZONES: List[Tuple[float, int, float, float, float, float, float, float]] = [
-    (0.92, 5, 1.4, 0.55, 0.18, 0.08, 0.06, 12.0),  # L1 landing — 5 wide petals
-    (0.55, 4, 1.0, 0.50, 0.14, 0.06, 0.05, 22.0),  # L2 flow — 4 mid petals
-    (0.18, 3, 0.70, 0.45, 0.10, 0.04, 0.04, 32.0),  # L3 discharge — 3 petals
-]
-_LEAF_V2_TOTAL_PETALS: int = sum(z[1] for z in _LEAF_V2_ZONES)
+_DEFAULT_N_PETALS_PER_LEAF: Tuple[int, ...] = (5, 4, 3)
+_DEFAULT_PETAL_ARC_OVERLAP: float = 1.10
+_DEFAULT_FACE_ID_PER_LEAF: Tuple[int, ...] = (0, 1, 2)
 
 
 def _bezier_point(t: float, cps: List[Tuple[float, float, float]]) -> Tuple[float, float, float]:
@@ -239,93 +234,127 @@ def _default_spine(
 
 
 def build_leaf_v2_mesh(
-    height_total_m: float,
-    landing_radius_m: float,
-    twist_total_deg: float,
+    leafs: List[Dict[str, Any]],
+    n_petals_per_leaf: Tuple[int, ...] = _DEFAULT_N_PETALS_PER_LEAF,
     n_u: int = 14,
     n_v: int = 10,
+    petal_arc_overlap: float = _DEFAULT_PETAL_ARC_OVERLAP,
 ) -> Tuple[List[Vertex], List[TriFace]]:
-    """Plan §9 leaf: bezier spine + per-zone *radial petals* (5/4/3 default).
+    """Build petal-based leaf mesh directly from LeafParams dicts (schema format).
 
-    Three leaf zones (landing / flow / discharge) sit at fixed t along
-    a cubic Bezier spine. Each zone places ``n_petals`` discrete petals
-    splaying out from the spine in the horizontal plane, each with:
-    - ``sin(π·u)`` width taper (narrow at root + tip, wide at middle)
-    - paraboloid camber, concave-up (peaks at petal centre)
-    - smooth rim curl at the petal's outer edge (``|v_local| > 0.75``)
-    - longitudinal channel groove down petal centre (``v_local ≈ 0``)
-    - per-zone pitch tilts petal downward from horizontal
-    - global twist rotates the whole petal cluster
+    Each leaf in ``leafs`` is rendered as ``n_petals_per_leaf[i]`` discrete
+    petals splaying out from the central z axis in the horizontal plane,
+    centred at ``leaf["z_m"]``. Each petal is a wedge of the leaf's
+    horizontal ellipse (long ``length_m``, short ``width_m``) with:
 
-    Mesh is the union of (5+4+3) = 12 independent petal surfaces.
-    Inter-petal blend / shell unification is Phase D follow-up (#17).
+    - ``sin(π·u)`` width taper along radial u (0 = root at spine, 1 = tip)
+    - paraboloid concave-up camber, peaks at petal centre
+    - smooth rim curl at angular edges (|v_local| > 0.7)
+    - longitudinal channel groove down petal centre (v_local ≈ 0)
+    - per-leaf pitch tilts each petal outward + downward
+    - per-leaf twist rotates the whole petal cluster about z
+
+    Adjacent petals overlap angularly by ``petal_arc_overlap`` (>= 1.0
+    means each petal angular span is N% wider than its slice, neighbours
+    overlap each other) for a continuous-ish surface.
+
+    Required keys per leaf dict: z_m, length_m, width_m, camber,
+    twist_deg, pitch_deg, rim_height_m, channel_depth_m.
     """
-    if height_total_m <= 0:
-        raise ValueError("height_total_m must be > 0")
-    if landing_radius_m <= 0:
-        raise ValueError("landing_radius_m must be > 0")
+    if not leafs:
+        raise ValueError("leafs list must not be empty")
+    if len(n_petals_per_leaf) < len(leafs):
+        raise ValueError(
+            "n_petals_per_leaf has fewer entries ({0}) than leafs ({1})".format(
+                len(n_petals_per_leaf), len(leafs)
+            )
+        )
     if n_u < 2 or n_v < 2:
         raise ValueError("n_u >= 2 and n_v >= 2 required")
+    if petal_arc_overlap < 1.0:
+        raise ValueError("petal_arc_overlap must be >= 1.0")
 
-    cps = _default_spine(height_total_m, landing_radius_m)
-    twist_total_rad = math.radians(twist_total_deg)
+    required_keys = (
+        "z_m",
+        "length_m",
+        "width_m",
+        "camber",
+        "twist_deg",
+        "pitch_deg",
+        "rim_height_m",
+        "channel_depth_m",
+    )
 
     all_verts: List[Vertex] = []
     all_faces: List[TriFace] = []
 
-    for (
-        t_center,
-        n_petals,
-        length_factor,
-        width_factor,
-        camber_factor,
-        rim_h_factor,
-        channel_depth_factor,
-        pitch_deg,
-    ) in _LEAF_V2_ZONES:
-        spine_pt = _bezier_point(t_center, cps)
+    for leaf_idx, leaf in enumerate(leafs):
+        for k in required_keys:
+            if k not in leaf:
+                raise ValueError("leaf[{0}] missing required key {1!r}".format(leaf_idx, k))
 
-        petal_length = landing_radius_m * length_factor
-        petal_width = landing_radius_m * width_factor
-        camber_m = camber_factor * petal_length
-        rim_m = rim_h_factor * petal_length
-        ch_depth = channel_depth_factor * petal_length
-
-        zone_twist = twist_total_rad * t_center
-        pitch_rad = math.radians(pitch_deg)
+        z_m = float(leaf["z_m"])
+        a = float(leaf["length_m"]) / 2.0
+        b = float(leaf["width_m"]) / 2.0
+        camber_h = float(leaf["camber"]) * min(a, b)
+        rim_height = float(leaf["rim_height_m"])
+        channel_depth = float(leaf["channel_depth_m"])
+        twist_rad = math.radians(float(leaf["twist_deg"]))
+        pitch_rad = math.radians(float(leaf["pitch_deg"]))
         cp = math.cos(pitch_rad)
         sp = math.sin(pitch_rad)
 
+        if a <= 0 or b <= 0:
+            raise ValueError("leaf[{0}] length_m and width_m must be > 0".format(leaf_idx))
+
+        n_petals = int(n_petals_per_leaf[leaf_idx])
+        if n_petals < 3:
+            raise ValueError(
+                "n_petals_per_leaf[{0}] must be >= 3, got {1}".format(leaf_idx, n_petals)
+            )
+        arc_per_petal = 2.0 * math.pi / n_petals
+        half_arc = arc_per_petal * petal_arc_overlap / 2.0
+
         for p_idx in range(n_petals):
-            petal_angle = zone_twist + 2.0 * math.pi * p_idx / n_petals
-            ca = math.cos(petal_angle)
-            sa = math.sin(petal_angle)
-            # petal frame in world:
-            #   petal_dir: outward in xy, then tilted down by pitch
-            #   perp_dir:  horizontal perpendicular to petal_dir (cross-leaf)
-            #   up_dir:    rotated world-Z (after pitch about perp axis)
-            petal_dir = (ca * cp, sa * cp, -sp)
-            perp_dir = (-sa, ca, 0.0)
-            up_dir = (ca * sp, sa * sp, cp)
+            petal_center_theta = twist_rad + 2.0 * math.pi * p_idx / n_petals
 
             base_idx = len(all_verts)
             for i in range(n_u):
-                u = i / float(n_u - 1)  # 0 = root, 1 = tip
-                wt = math.sin(math.pi * u)  # width taper
+                u = i / float(n_u - 1)
+                width_taper = math.sin(math.pi * u)
                 for j in range(n_v):
-                    v_local = (j / float(n_v - 1)) * 2.0 - 1.0  # -1 .. 1
-                    x_p = petal_length * u
-                    y_p = petal_width * 0.5 * wt * v_local
-                    z_camber = camber_m * (wt * wt) * (1.0 - v_local * v_local)
-                    rim_frac = max(0.0, (abs(v_local) - 0.75) / 0.25)
-                    z_rim = rim_m * rim_frac * rim_frac
-                    z_channel = -ch_depth * wt * math.exp(-(v_local * v_local) / 0.04)
-                    z_p = z_camber + z_rim + z_channel
+                    v_local = (j / float(n_v - 1)) * 2.0 - 1.0  # -1 .. +1
 
-                    px = spine_pt[0] + petal_dir[0] * x_p + perp_dir[0] * y_p + up_dir[0] * z_p
-                    py = spine_pt[1] + petal_dir[1] * x_p + perp_dir[1] * y_p + up_dir[1] * z_p
-                    pz = spine_pt[2] + petal_dir[2] * x_p + perp_dir[2] * y_p + up_dir[2] * z_p
-                    all_verts.append((px, py, pz))
+                    # angular position within this petal (with overlap)
+                    eff_theta = petal_center_theta + v_local * half_arc
+                    cos_t = math.cos(eff_theta)
+                    sin_t = math.sin(eff_theta)
+
+                    # radial = u × ellipse radius at this angle
+                    denom = math.sqrt((b * cos_t) ** 2 + (a * sin_t) ** 2)
+                    r_ellipse = (a * b / denom) if denom > 1e-12 else min(a, b)
+                    r = u * r_ellipse
+
+                    # monotone outward-down slope: high at spine, low at tip.
+                    # Combined with pitch tilt, water slides outward without
+                    # getting trapped in a bowl.
+                    z_camber = camber_h * (1.0 - u * u)
+                    rim_factor = max(0.0, (abs(v_local) - 0.7) / 0.3)
+                    z_rim = rim_height * rim_factor * rim_factor
+                    ch_factor = math.exp(-(v_local * v_local) / 0.05) * width_taper
+                    z_channel = -channel_depth * ch_factor
+                    z_local = z_camber + z_rim + z_channel
+
+                    # pitch tilt in radial-up plane (tilts tip down + outward)
+                    r_tilted = r * cp + z_local * sp
+                    z_tilted = -r * sp + z_local * cp
+
+                    # world position (centred on x=y=0, z=z_m)
+                    x_world = r_tilted * cos_t
+                    y_world = r_tilted * sin_t
+                    z_world = z_m + z_tilted
+
+                    all_verts.append((x_world, y_world, z_world))
 
             for i in range(n_u - 1):
                 for j in range(n_v - 1):
@@ -337,6 +366,27 @@ def build_leaf_v2_mesh(
                     all_faces.append((a_i, c_i, d_i))
 
     return all_verts, all_faces
+
+
+def leaf_face_id_of(
+    face_index: int,
+    n_petals_per_leaf: Tuple[int, ...] = _DEFAULT_N_PETALS_PER_LEAF,
+    n_u: int = 14,
+    n_v: int = 10,
+) -> int:
+    """Map a global triangle face index back to its source leaf index (0/1/2).
+
+    Used by water-path simulator to detect 'hit which leaf'. Faces per
+    petal = 2 * (n_u-1) * (n_v-1). Faces per leaf = n_petals * per_petal.
+    """
+    faces_per_petal = 2 * (n_u - 1) * (n_v - 1)
+    running = 0
+    for leaf_idx, n_petals in enumerate(n_petals_per_leaf):
+        faces_in_leaf = n_petals * faces_per_petal
+        if face_index < running + faces_in_leaf:
+            return leaf_idx
+        running += faces_in_leaf
+    return len(n_petals_per_leaf) - 1
 
 
 def build_params_dict(
