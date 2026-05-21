@@ -373,18 +373,18 @@ def test_build_real_leaf_mesh_rejects_bad_input() -> None:
 
 
 def test_build_leaf_v2_mesh_counts() -> None:
-    from gh.scripts.leaf_generator import build_leaf_v2_mesh
+    from gh.scripts.leaf_generator import _LEAF_V2_TOTAL_PETALS, build_leaf_v2_mesh
 
-    n_v, n_theta = 10, 16
+    n_u, n_v = 10, 8
     verts, faces = build_leaf_v2_mesh(
         height_total_m=14.0,
         landing_radius_m=1.2,
         twist_total_deg=60.0,
+        n_u=n_u,
         n_v=n_v,
-        n_theta=n_theta,
     )
-    assert len(verts) == 3 * n_v * n_theta
-    assert len(faces) == 3 * 2 * (n_v - 1) * n_theta
+    assert len(verts) == _LEAF_V2_TOTAL_PETALS * n_u * n_v
+    assert len(faces) == _LEAF_V2_TOTAL_PETALS * 2 * (n_u - 1) * (n_v - 1)
 
 
 def test_build_leaf_v2_mesh_no_nan_and_z_bounded() -> None:
@@ -414,15 +414,15 @@ def test_build_leaf_v2_mesh_twist_rotates_xy() -> None:
         height_total_m=14.0,
         landing_radius_m=1.2,
         twist_total_deg=0.0,
-        n_v=6,
-        n_theta=8,
+        n_u=6,
+        n_v=4,
     )
     verts_b, _ = build_leaf_v2_mesh(
         height_total_m=14.0,
         landing_radius_m=1.2,
         twist_total_deg=180.0,
-        n_v=6,
-        n_theta=8,
+        n_u=6,
+        n_v=4,
     )
     differ = any(
         abs(a[0] - b[0]) > 1e-6 or abs(a[1] - b[1]) > 1e-6
@@ -441,8 +441,6 @@ def test_build_leaf_v2_mesh_rejects_bad_input() -> None:
     with pytest.raises(ValueError):
         build_leaf_v2_mesh(height_total_m=10.0, landing_radius_m=0.0, twist_total_deg=0.0)
     with pytest.raises(ValueError):
-        build_leaf_v2_mesh(height_total_m=10.0, landing_radius_m=1.0, twist_total_deg=0.0, n_v=2)
+        build_leaf_v2_mesh(height_total_m=10.0, landing_radius_m=1.0, twist_total_deg=0.0, n_u=1)
     with pytest.raises(ValueError):
-        build_leaf_v2_mesh(
-            height_total_m=10.0, landing_radius_m=1.0, twist_total_deg=0.0, n_theta=2
-        )
+        build_leaf_v2_mesh(height_total_m=10.0, landing_radius_m=1.0, twist_total_deg=0.0, n_v=1)

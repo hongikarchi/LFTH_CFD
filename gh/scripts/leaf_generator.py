@@ -152,13 +152,14 @@ def build_real_leaf_mesh(
 # build_leaf_v2_mesh — plan §9 pipeline (spine + zones + profile + rim + channel)
 # ---------------------------------------------------------------------------
 
-# (t_center, t_half_width, length_factor, width_aspect, camber_factor,
-#  rim_h_factor, channel_depth_factor, channel_width_sigma)
-_LEAF_V2_ZONES: List[Tuple[float, float, float, float, float, float, float, float]] = [
-    (0.92, 0.08, 1.6, 0.70, 0.20, 0.08, 0.06, 0.30),  # L1 landing — large bowl
-    (0.55, 0.13, 1.1, 0.65, 0.16, 0.06, 0.05, 0.28),  # L2 flow — mid
-    (0.18, 0.10, 0.75, 0.60, 0.12, 0.04, 0.04, 0.26),  # L3 discharge
+# (t_center, n_petals, length_factor, width_factor, camber_factor,
+#  rim_h_factor, channel_depth_factor, pitch_deg)
+_LEAF_V2_ZONES: List[Tuple[float, int, float, float, float, float, float, float]] = [
+    (0.92, 5, 1.4, 0.55, 0.18, 0.08, 0.06, 12.0),  # L1 landing — 5 wide petals
+    (0.55, 4, 1.0, 0.50, 0.14, 0.06, 0.05, 22.0),  # L2 flow — 4 mid petals
+    (0.18, 3, 0.70, 0.45, 0.10, 0.04, 0.04, 32.0),  # L3 discharge — 3 petals
 ]
+_LEAF_V2_TOTAL_PETALS: int = sum(z[1] for z in _LEAF_V2_ZONES)
 
 
 def _bezier_point(t: float, cps: List[Tuple[float, float, float]]) -> Tuple[float, float, float]:
@@ -241,29 +242,30 @@ def build_leaf_v2_mesh(
     height_total_m: float,
     landing_radius_m: float,
     twist_total_deg: float,
-    n_v: int = 14,
-    n_theta: int = 28,
+    n_u: int = 14,
+    n_v: int = 10,
 ) -> Tuple[List[Vertex], List[TriFace]]:
-    """Plan §9 leaf: bezier spine + per-zone profile (ellipse + camber + rim + channel).
+    """Plan §9 leaf: bezier spine + per-zone *radial petals* (5/4/3 default).
 
-    Three leaf zones (landing / flow / discharge) are placed along a
-    cubic Bezier spine. Per-zone profile is an ellipse cross-section
-    swept along the local spine tangent, with:
-    - paraboloid camber (concave-up bowl, peaks at zone centre)
-    - smooth rim curl at the outer edge (u > 0.85)
-    - longitudinal channel groove at theta ≈ 0 / π
-    - global twist (radians per fraction of spine height) accumulated
-      along v
+    Three leaf zones (landing / flow / discharge) sit at fixed t along
+    a cubic Bezier spine. Each zone places ``n_petals`` discrete petals
+    splaying out from the spine in the horizontal plane, each with:
+    - ``sin(π·u)`` width taper (narrow at root + tip, wide at middle)
+    - paraboloid camber, concave-up (peaks at petal centre)
+    - smooth rim curl at the petal's outer edge (``|v_local| > 0.75``)
+    - longitudinal channel groove down petal centre (``v_local ≈ 0``)
+    - per-zone pitch tilts petal downward from horizontal
+    - global twist rotates the whole petal cluster
 
-    Returns one big mesh that is the union of three independent leaf
-    surfaces (no inter-leaf blend yet — that's a Phase D follow-up).
+    Mesh is the union of (5+4+3) = 12 independent petal surfaces.
+    Inter-petal blend / shell unification is Phase D follow-up (#17).
     """
     if height_total_m <= 0:
         raise ValueError("height_total_m must be > 0")
     if landing_radius_m <= 0:
         raise ValueError("landing_radius_m must be > 0")
-    if n_v < 3 or n_theta < 3:
-        raise ValueError("n_v >= 3 and n_theta >= 3 required")
+    if n_u < 2 or n_v < 2:
+        raise ValueError("n_u >= 2 and n_v >= 2 required")
 
     cps = _default_spine(height_total_m, landing_radius_m)
     twist_total_rad = math.radians(twist_total_deg)
@@ -273,80 +275,66 @@ def build_leaf_v2_mesh(
 
     for (
         t_center,
-        t_half,
+        n_petals,
         length_factor,
-        width_aspect,
+        width_factor,
         camber_factor,
         rim_h_factor,
         channel_depth_factor,
-        channel_sigma,
+        pitch_deg,
     ) in _LEAF_V2_ZONES:
-        a_max = landing_radius_m * length_factor
-        b_max = a_max * width_aspect
-        camber_max = camber_factor * a_max
-        rim_max = rim_h_factor * a_max
-        channel_depth = channel_depth_factor * a_max
+        spine_pt = _bezier_point(t_center, cps)
 
-        base_idx = len(all_verts)
-        for i in range(n_v):
-            v_frac = i / float(n_v - 1)  # 0 → 1 within zone
-            t = (t_center - t_half) + 2.0 * t_half * v_frac
-            t = min(max(t, 0.0), 1.0)
-            spine_pt = _bezier_point(t, cps)
-            tangent = _normalize(_bezier_tangent(t, cps))
-            n_vec, b_vec = _local_frame(tangent)
+        petal_length = landing_radius_m * length_factor
+        petal_width = landing_radius_m * width_factor
+        camber_m = camber_factor * petal_length
+        rim_m = rim_h_factor * petal_length
+        ch_depth = channel_depth_factor * petal_length
 
-            # zone-local v in [-1, 1] for taper
-            v_local = 2.0 * v_frac - 1.0
-            scale = max(0.0, 1.0 - v_local * v_local)
+        zone_twist = twist_total_rad * t_center
+        pitch_rad = math.radians(pitch_deg)
+        cp = math.cos(pitch_rad)
+        sp = math.sin(pitch_rad)
 
-            a_v = a_max * scale
-            b_v = b_max * scale
-            camber_v = camber_max * scale
-            rim_v = rim_max * scale
-            ch_depth_v = channel_depth * scale
+        for p_idx in range(n_petals):
+            petal_angle = zone_twist + 2.0 * math.pi * p_idx / n_petals
+            ca = math.cos(petal_angle)
+            sa = math.sin(petal_angle)
+            # petal frame in world:
+            #   petal_dir: outward in xy, then tilted down by pitch
+            #   perp_dir:  horizontal perpendicular to petal_dir (cross-leaf)
+            #   up_dir:    rotated world-Z (after pitch about perp axis)
+            petal_dir = (ca * cp, sa * cp, -sp)
+            perp_dir = (-sa, ca, 0.0)
+            up_dir = (ca * sp, sa * sp, cp)
 
-            twist_rad = twist_total_rad * t
+            base_idx = len(all_verts)
+            for i in range(n_u):
+                u = i / float(n_u - 1)  # 0 = root, 1 = tip
+                wt = math.sin(math.pi * u)  # width taper
+                for j in range(n_v):
+                    v_local = (j / float(n_v - 1)) * 2.0 - 1.0  # -1 .. 1
+                    x_p = petal_length * u
+                    y_p = petal_width * 0.5 * wt * v_local
+                    z_camber = camber_m * (wt * wt) * (1.0 - v_local * v_local)
+                    rim_frac = max(0.0, (abs(v_local) - 0.75) / 0.25)
+                    z_rim = rim_m * rim_frac * rim_frac
+                    z_channel = -ch_depth * wt * math.exp(-(v_local * v_local) / 0.04)
+                    z_p = z_camber + z_rim + z_channel
 
-            for j in range(n_theta):
-                theta = 2.0 * math.pi * j / n_theta
-                cos_th = math.cos(theta)
-                sin_th = math.sin(theta)
-                # u — radial param within the profile (always full radius for now)
-                u = 1.0
-                x_local = a_v * u * cos_th
-                y_local = b_v * u * sin_th
-                z_dome = camber_v * (1.0 - u * u)
-                rim_frac = max(0.0, (u - 0.85) / 0.15)
-                z_rim = rim_v * rim_frac * rim_frac
-                # longitudinal channel: deepest at sin(theta) ≈ 0
-                if channel_sigma > 0:
-                    ch_factor = math.exp(-(sin_th * sin_th) / (channel_sigma * channel_sigma))
-                else:
-                    ch_factor = 0.0
-                z_channel = -ch_depth_v * ch_factor * (1.0 - u * u)
-                z_local = z_dome + z_rim + z_channel
+                    px = spine_pt[0] + petal_dir[0] * x_p + perp_dir[0] * y_p + up_dir[0] * z_p
+                    py = spine_pt[1] + petal_dir[1] * x_p + perp_dir[1] * y_p + up_dir[1] * z_p
+                    pz = spine_pt[2] + petal_dir[2] * x_p + perp_dir[2] * y_p + up_dir[2] * z_p
+                    all_verts.append((px, py, pz))
 
-                # twist about spine tangent (rotate x_local/y_local in local frame)
-                ct = math.cos(twist_rad)
-                st = math.sin(twist_rad)
-                x_t = x_local * ct - y_local * st
-                y_t = x_local * st + y_local * ct
-
-                # place in world: spine + N*x_t + B*y_t + T*z_local
-                px = spine_pt[0] + n_vec[0] * x_t + b_vec[0] * y_t + tangent[0] * z_local
-                py = spine_pt[1] + n_vec[1] * x_t + b_vec[1] * y_t + tangent[1] * z_local
-                pz = spine_pt[2] + n_vec[2] * x_t + b_vec[2] * y_t + tangent[2] * z_local
-                all_verts.append((px, py, pz))
-
-        for i in range(n_v - 1):
-            for j in range(n_theta):
-                a_i = base_idx + i * n_theta + j
-                b_i = base_idx + i * n_theta + ((j + 1) % n_theta)
-                c_i = base_idx + (i + 1) * n_theta + ((j + 1) % n_theta)
-                d_i = base_idx + (i + 1) * n_theta + j
-                all_faces.append((a_i, b_i, c_i))
-                all_faces.append((a_i, c_i, d_i))
+            for i in range(n_u - 1):
+                for j in range(n_v - 1):
+                    a_i = base_idx + i * n_v + j
+                    b_i = base_idx + i * n_v + (j + 1)
+                    c_i = base_idx + (i + 1) * n_v + (j + 1)
+                    d_i = base_idx + (i + 1) * n_v + j
+                    all_faces.append((a_i, b_i, c_i))
+                    all_faces.append((a_i, c_i, d_i))
 
     return all_verts, all_faces
 
