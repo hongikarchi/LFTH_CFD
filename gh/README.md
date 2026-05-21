@@ -134,7 +134,7 @@ export.summary ──→ summary panel
 
 ```python
 # r: trimesh
-import sys, pathlib
+import sys, pathlib, json
 REPO_ROOT = pathlib.Path(r"C:\Users\user\Documents\LFTH_CFD")
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
@@ -145,7 +145,6 @@ import Rhino.Geometry as rg
 verts, faces = build_mvp_mesh(height_total_m, landing_radius_m, twist_total_deg)
 params_dict = build_params_dict(candidate_id, height_total_m, landing_radius_m, twist_total_deg)
 
-# verts/faces -> RhinoCommon Mesh for GH preview
 mesh = rg.Mesh()
 for v in verts:
     mesh.Vertices.Add(v[0], v[1], v[2])
@@ -154,25 +153,29 @@ for f in faces:
 mesh.Normals.ComputeNormals()
 mesh.Compact()
 
-a = mesh           # output 0: mesh
-b = params_dict    # output 1: params_dict
-c = candidate_id   # output 2: candidate_id (pass-through)
+a = mesh                       # output 0: mesh (RhinoCommon Mesh)
+b = json.dumps(params_dict)    # output 1: params_dict as JSON string (see note)
+c = candidate_id               # output 2: candidate_id (pass-through)
 ```
 
-`REPO_ROOT` 절대경로는 각자 머신에 맞춰 수정 (TODO: 환경변수 LEAFLAB_REPO_ROOT로 빼는 게 깔끔 — Phase C 작업).
+**Note on `json.dumps`**: GH의 default type-hint coercion이 Python `dict` 를 wire 통과 시 string으로 변환 → 수신측 `dict(params_dict)` 실패. 우리가 직접 JSON 직렬화하면 lossy coercion 회피. `export` 컴포넌트가 `json.loads` 로 복원. 후속: `System.Object` type hint 가 raw dict 보존하면 json round-trip 제거.
+
+`REPO_ROOT` 절대경로는 각자 머신에 맞춰 수정 (TODO: 환경변수 `LEAFLAB_REPO_ROOT` 로 빼는 게 깔끔 — Phase C 작업).
 
 ### `export` 컴포넌트 코드 (paste)
 
 ```python
 # r: trimesh
-import sys, pathlib
+import sys, pathlib, json
 REPO_ROOT = pathlib.Path(r"C:\Users\user\Documents\LFTH_CFD")
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from gh.scripts.export_candidate import export_candidate
 
-# convert RhinoCommon Mesh -> vert/face lists
+# params_dict arrives as JSON string (see build component note)
+params_dict = json.loads(params_dict)
+
 verts = [(v.X, v.Y, v.Z) for v in mesh.Vertices]
 faces = []
 for f in mesh.Faces:
