@@ -158,9 +158,9 @@ import gh.scripts.leaf_generator
 import gh.scripts.water_curtain
 importlib.reload(gh.scripts.leaf_generator)
 importlib.reload(gh.scripts.water_curtain)
-from gh.scripts.leaf_generator import build_real_leaf_mesh, build_params_dict
+from gh.scripts.leaf_generator import build_leaf_v2_mesh, build_params_dict
 from gh.scripts.water_curtain import (
-    nozzles_from_points, fall_trajectory_endpoint, velocity_from_tilt,
+    nozzles_from_points, fall_trajectory_polyline, velocity_from_tilt,
 )
 
 doc = Rhino.RhinoDoc.ActiveDoc
@@ -168,7 +168,7 @@ m_to_doc = Rhino.RhinoMath.UnitScale(Rhino.UnitSystem.Meters, doc.ModelUnitSyste
 m_to_doc = m_to_doc if m_to_doc != 0 else 1.0
 doc_to_m = 1.0 / m_to_doc
 
-verts, faces = build_real_leaf_mesh(height_total_m, landing_radius_m, twist_total_deg)
+verts, faces = build_leaf_v2_mesh(height_total_m, landing_radius_m, twist_total_deg)
 
 # doc-unit Points → meters
 points_xyz = [(p.X * doc_to_m, p.Y * doc_to_m, p.Z * doc_to_m) for p in nozzle_points]
@@ -199,16 +199,17 @@ for f in faces:
 mesh.Normals.ComputeNormals()
 mesh.Compact()
 
-# Free-fall preview lines (one per nozzle, meter→doc scale).
-# Parabolic endpoint when nozzle_tilt_deg > 0.
+# Free-fall preview polylines (one per nozzle, meter→doc scale).
+# Parabolic curve when nozzle_tilt_deg > 0; straight vertical otherwise.
 curtain_curves = []
 for nz in nozzles:
     sp_m = tuple(nz["position"])
     vel = tuple(nz["velocity_mps"]) if nz["velocity_mps"] is not None else None
-    ep_m = fall_trajectory_endpoint(sp_m, fall_h, velocity_mps=vel)
-    sp = rg.Point3d(sp_m[0] * m_to_doc, sp_m[1] * m_to_doc, sp_m[2] * m_to_doc)
-    ep = rg.Point3d(ep_m[0] * m_to_doc, ep_m[1] * m_to_doc, ep_m[2] * m_to_doc)
-    curtain_curves.append(rg.Line(sp, ep).ToNurbsCurve())
+    pts_m = fall_trajectory_polyline(sp_m, fall_h, velocity_mps=vel, n_samples=20)
+    polyline = rg.Polyline(
+        [rg.Point3d(x * m_to_doc, y * m_to_doc, z * m_to_doc) for (x, y, z) in pts_m]
+    )
+    curtain_curves.append(polyline.ToNurbsCurve())
 
 a = mesh
 b = json.dumps(params_dict)

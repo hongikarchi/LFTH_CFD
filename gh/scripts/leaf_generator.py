@@ -148,6 +148,209 @@ def build_real_leaf_mesh(
     return all_verts, all_faces
 
 
+# ---------------------------------------------------------------------------
+# build_leaf_v2_mesh — plan §9 pipeline (spine + zones + profile + rim + channel)
+# ---------------------------------------------------------------------------
+
+# (t_center, t_half_width, length_factor, width_aspect, camber_factor,
+#  rim_h_factor, channel_depth_factor, channel_width_sigma)
+_LEAF_V2_ZONES: List[Tuple[float, float, float, float, float, float, float, float]] = [
+    (0.92, 0.08, 1.6, 0.70, 0.20, 0.08, 0.06, 0.30),  # L1 landing — large bowl
+    (0.55, 0.13, 1.1, 0.65, 0.16, 0.06, 0.05, 0.28),  # L2 flow — mid
+    (0.18, 0.10, 0.75, 0.60, 0.12, 0.04, 0.04, 0.26),  # L3 discharge
+]
+
+
+def _bezier_point(t: float, cps: List[Tuple[float, float, float]]) -> Tuple[float, float, float]:
+    """Cubic Bezier position at parameter t given 4 control points."""
+    u = 1.0 - t
+    u2 = u * u
+    t2 = t * t
+    b0 = u2 * u
+    b1 = 3.0 * u2 * t
+    b2 = 3.0 * u * t2
+    b3 = t2 * t
+    return (
+        b0 * cps[0][0] + b1 * cps[1][0] + b2 * cps[2][0] + b3 * cps[3][0],
+        b0 * cps[0][1] + b1 * cps[1][1] + b2 * cps[2][1] + b3 * cps[3][1],
+        b0 * cps[0][2] + b1 * cps[1][2] + b2 * cps[2][2] + b3 * cps[3][2],
+    )
+
+
+def _bezier_tangent(t: float, cps: List[Tuple[float, float, float]]) -> Tuple[float, float, float]:
+    """Cubic Bezier derivative at t (not normalised)."""
+    u = 1.0 - t
+    a0 = 3.0 * u * u
+    a1 = 6.0 * u * t
+    a2 = 3.0 * t * t
+    return (
+        a0 * (cps[1][0] - cps[0][0]) + a1 * (cps[2][0] - cps[1][0]) + a2 * (cps[3][0] - cps[2][0]),
+        a0 * (cps[1][1] - cps[0][1]) + a1 * (cps[2][1] - cps[1][1]) + a2 * (cps[3][1] - cps[2][1]),
+        a0 * (cps[1][2] - cps[0][2]) + a1 * (cps[2][2] - cps[1][2]) + a2 * (cps[3][2] - cps[2][2]),
+    )
+
+
+def _normalize(
+    v: Tuple[float, float, float],
+) -> Tuple[float, float, float]:
+    mag = math.sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2])
+    if mag < 1e-12:
+        return (0.0, 0.0, 1.0)
+    return (v[0] / mag, v[1] / mag, v[2] / mag)
+
+
+def _cross(
+    a: Tuple[float, float, float], b: Tuple[float, float, float]
+) -> Tuple[float, float, float]:
+    return (
+        a[1] * b[2] - a[2] * b[1],
+        a[2] * b[0] - a[0] * b[2],
+        a[0] * b[1] - a[1] * b[0],
+    )
+
+
+def _local_frame(
+    tangent: Tuple[float, float, float],
+) -> Tuple[Tuple[float, float, float], Tuple[float, float, float]]:
+    """Build (N, B) perpendicular to tangent. N kept roughly aligned with world +X."""
+    world_x = (1.0, 0.0, 0.0)
+    n_raw = _cross(world_x, tangent)
+    if abs(n_raw[0]) + abs(n_raw[1]) + abs(n_raw[2]) < 1e-9:
+        # tangent ‖ world_x → fall back to world_y
+        n_raw = _cross((0.0, 1.0, 0.0), tangent)
+    n_vec = _normalize(_cross(tangent, n_raw))
+    b_vec = _normalize(_cross(tangent, n_vec))
+    return n_vec, b_vec
+
+
+def _default_spine(
+    height_total_m: float, landing_radius_m: float
+) -> List[Tuple[float, float, float]]:
+    """4-point cubic Bezier — base to apex, with mild S-curve in xy."""
+    r = landing_radius_m
+    h = height_total_m
+    return [
+        (0.0, 0.0, 0.0),
+        (0.40 * r, -0.30 * r, 0.33 * h),
+        (-0.35 * r, 0.45 * r, 0.66 * h),
+        (0.15 * r, 0.10 * r, h),
+    ]
+
+
+def build_leaf_v2_mesh(
+    height_total_m: float,
+    landing_radius_m: float,
+    twist_total_deg: float,
+    n_v: int = 14,
+    n_theta: int = 28,
+) -> Tuple[List[Vertex], List[TriFace]]:
+    """Plan §9 leaf: bezier spine + per-zone profile (ellipse + camber + rim + channel).
+
+    Three leaf zones (landing / flow / discharge) are placed along a
+    cubic Bezier spine. Per-zone profile is an ellipse cross-section
+    swept along the local spine tangent, with:
+    - paraboloid camber (concave-up bowl, peaks at zone centre)
+    - smooth rim curl at the outer edge (u > 0.85)
+    - longitudinal channel groove at theta ≈ 0 / π
+    - global twist (radians per fraction of spine height) accumulated
+      along v
+
+    Returns one big mesh that is the union of three independent leaf
+    surfaces (no inter-leaf blend yet — that's a Phase D follow-up).
+    """
+    if height_total_m <= 0:
+        raise ValueError("height_total_m must be > 0")
+    if landing_radius_m <= 0:
+        raise ValueError("landing_radius_m must be > 0")
+    if n_v < 3 or n_theta < 3:
+        raise ValueError("n_v >= 3 and n_theta >= 3 required")
+
+    cps = _default_spine(height_total_m, landing_radius_m)
+    twist_total_rad = math.radians(twist_total_deg)
+
+    all_verts: List[Vertex] = []
+    all_faces: List[TriFace] = []
+
+    for (
+        t_center,
+        t_half,
+        length_factor,
+        width_aspect,
+        camber_factor,
+        rim_h_factor,
+        channel_depth_factor,
+        channel_sigma,
+    ) in _LEAF_V2_ZONES:
+        a_max = landing_radius_m * length_factor
+        b_max = a_max * width_aspect
+        camber_max = camber_factor * a_max
+        rim_max = rim_h_factor * a_max
+        channel_depth = channel_depth_factor * a_max
+
+        base_idx = len(all_verts)
+        for i in range(n_v):
+            v_frac = i / float(n_v - 1)  # 0 → 1 within zone
+            t = (t_center - t_half) + 2.0 * t_half * v_frac
+            t = min(max(t, 0.0), 1.0)
+            spine_pt = _bezier_point(t, cps)
+            tangent = _normalize(_bezier_tangent(t, cps))
+            n_vec, b_vec = _local_frame(tangent)
+
+            # zone-local v in [-1, 1] for taper
+            v_local = 2.0 * v_frac - 1.0
+            scale = max(0.0, 1.0 - v_local * v_local)
+
+            a_v = a_max * scale
+            b_v = b_max * scale
+            camber_v = camber_max * scale
+            rim_v = rim_max * scale
+            ch_depth_v = channel_depth * scale
+
+            twist_rad = twist_total_rad * t
+
+            for j in range(n_theta):
+                theta = 2.0 * math.pi * j / n_theta
+                cos_th = math.cos(theta)
+                sin_th = math.sin(theta)
+                # u — radial param within the profile (always full radius for now)
+                u = 1.0
+                x_local = a_v * u * cos_th
+                y_local = b_v * u * sin_th
+                z_dome = camber_v * (1.0 - u * u)
+                rim_frac = max(0.0, (u - 0.85) / 0.15)
+                z_rim = rim_v * rim_frac * rim_frac
+                # longitudinal channel: deepest at sin(theta) ≈ 0
+                if channel_sigma > 0:
+                    ch_factor = math.exp(-(sin_th * sin_th) / (channel_sigma * channel_sigma))
+                else:
+                    ch_factor = 0.0
+                z_channel = -ch_depth_v * ch_factor * (1.0 - u * u)
+                z_local = z_dome + z_rim + z_channel
+
+                # twist about spine tangent (rotate x_local/y_local in local frame)
+                ct = math.cos(twist_rad)
+                st = math.sin(twist_rad)
+                x_t = x_local * ct - y_local * st
+                y_t = x_local * st + y_local * ct
+
+                # place in world: spine + N*x_t + B*y_t + T*z_local
+                px = spine_pt[0] + n_vec[0] * x_t + b_vec[0] * y_t + tangent[0] * z_local
+                py = spine_pt[1] + n_vec[1] * x_t + b_vec[1] * y_t + tangent[1] * z_local
+                pz = spine_pt[2] + n_vec[2] * x_t + b_vec[2] * y_t + tangent[2] * z_local
+                all_verts.append((px, py, pz))
+
+        for i in range(n_v - 1):
+            for j in range(n_theta):
+                a_i = base_idx + i * n_theta + j
+                b_i = base_idx + i * n_theta + ((j + 1) % n_theta)
+                c_i = base_idx + (i + 1) * n_theta + ((j + 1) % n_theta)
+                d_i = base_idx + (i + 1) * n_theta + j
+                all_faces.append((a_i, b_i, c_i))
+                all_faces.append((a_i, c_i, d_i))
+
+    return all_verts, all_faces
+
+
 def build_params_dict(
     candidate_id: str,
     height_total_m: float,

@@ -78,6 +78,18 @@ def velocity_from_tilt(
     return (vx, vy, vz)
 
 
+def _solve_fall_time(vz: float, fall_height_m: float, gravity_mps2: float) -> float:
+    """Time for a particle with vertical velocity vz to drop by fall_height_m.
+
+    Solves ``0.5 g t^2 - vz t - fall_height = 0`` for the positive root.
+    """
+    disc = vz * vz + 2.0 * gravity_mps2 * fall_height_m
+    if disc < 0:
+        # gravity > 0 ensures disc > 0; defensive only
+        return math.sqrt(2.0 * fall_height_m / gravity_mps2)
+    return (vz + math.sqrt(disc)) / gravity_mps2
+
+
 def fall_trajectory_endpoint(
     start_xyz_m: PointXYZ,
     fall_height_m: float,
@@ -98,10 +110,41 @@ def fall_trajectory_endpoint(
     if velocity_mps is None or (velocity_mps[0] == 0.0 and velocity_mps[1] == 0.0):
         return (sx, sy, sz - fall_height_m)
     vx, vy, vz = velocity_mps
-    # z(t) = sz + vz*t - 0.5*g*t^2 ; solve for t at z = sz - fall_height
-    # 0.5*g*t^2 - vz*t - fall_height = 0  =>  t = (vz + sqrt(vz^2 + 2g*h)) / g
-    disc = vz * vz + 2.0 * gravity_mps2 * fall_height_m
-    if disc < 0:
-        return (sx, sy, sz - fall_height_m)
-    t = (vz + math.sqrt(disc)) / gravity_mps2
+    t = _solve_fall_time(vz, fall_height_m, gravity_mps2)
     return (sx + vx * t, sy + vy * t, sz - fall_height_m)
+
+
+def fall_trajectory_polyline(
+    start_xyz_m: PointXYZ,
+    fall_height_m: float,
+    velocity_mps: Optional[PointXYZ] = None,
+    gravity_mps2: float = 9.81,
+    n_samples: int = 16,
+) -> List[PointXYZ]:
+    """Sample N positions along the free-fall trajectory in meters.
+
+    Index 0 = start_xyz_m. Last index ≈ landing point at
+    z = start.z - fall_height_m. Parabolic curve when velocity_mps has
+    horizontal components; straight vertical line otherwise.
+    """
+    if n_samples < 2:
+        raise ValueError("n_samples must be >= 2, got {0}".format(n_samples))
+    if fall_height_m <= 0:
+        raise ValueError("fall_height_m must be > 0, got {0}".format(fall_height_m))
+    if gravity_mps2 <= 0:
+        raise ValueError("gravity_mps2 must be > 0, got {0}".format(gravity_mps2))
+    sx, sy, sz = start_xyz_m
+    if velocity_mps is None:
+        vx, vy, vz = 0.0, 0.0, 0.0
+    else:
+        vx, vy, vz = velocity_mps[0], velocity_mps[1], velocity_mps[2]
+    t_end = _solve_fall_time(vz, fall_height_m, gravity_mps2)
+    out: List[PointXYZ] = []
+    for i in range(n_samples):
+        frac = i / float(n_samples - 1)
+        t = t_end * frac
+        x = sx + vx * t
+        y = sy + vy * t
+        z = sz + vz * t - 0.5 * gravity_mps2 * t * t
+        out.append((x, y, z))
+    return out

@@ -274,6 +274,54 @@ def test_water_curtain_fall_endpoint_parabolic_drift() -> None:
     assert end[0] < 50.0  # sanity bound
 
 
+def test_water_curtain_polyline_vertical_straight_line() -> None:
+    from gh.scripts.water_curtain import fall_trajectory_polyline
+
+    pts = fall_trajectory_polyline((1.0, 2.0, 15.0), fall_height_m=15.0, n_samples=10)
+    assert len(pts) == 10
+    assert pts[0] == (1.0, 2.0, 15.0)
+    assert abs(pts[-1][2]) < 1e-9
+    # vertical: all xy same
+    for p in pts:
+        assert abs(p[0] - 1.0) < 1e-12
+        assert abs(p[1] - 2.0) < 1e-12
+    # z monotonic decreasing
+    for a, b in zip(pts[:-1], pts[1:], strict=False):
+        assert a[2] >= b[2] - 1e-12
+
+
+def test_water_curtain_polyline_parabolic_x_drift() -> None:
+    from gh.scripts.water_curtain import fall_trajectory_polyline
+
+    pts = fall_trajectory_polyline(
+        (0.0, 0.0, 15.0),
+        fall_height_m=15.0,
+        velocity_mps=(5.0, 0.0, 0.0),
+        n_samples=20,
+    )
+    # x grows from 0, z drops from 15 to 0
+    assert pts[0] == (0.0, 0.0, 15.0)
+    assert abs(pts[-1][2]) < 1e-9
+    assert pts[-1][0] > 0.0
+    # check curve is convex (z drops faster as t grows due to gravity)
+    z_diffs = [pts[i + 1][2] - pts[i][2] for i in range(len(pts) - 1)]
+    # last interval larger drop magnitude than first
+    assert abs(z_diffs[-1]) > abs(z_diffs[0])
+
+
+def test_water_curtain_polyline_invalid_inputs() -> None:
+    import pytest
+
+    from gh.scripts.water_curtain import fall_trajectory_polyline
+
+    with pytest.raises(ValueError):
+        fall_trajectory_polyline((0.0, 0.0, 15.0), fall_height_m=15.0, n_samples=1)
+    with pytest.raises(ValueError):
+        fall_trajectory_polyline((0.0, 0.0, 15.0), fall_height_m=0.0)
+    with pytest.raises(ValueError):
+        fall_trajectory_polyline((0.0, 0.0, 15.0), fall_height_m=15.0, gravity_mps2=0.0)
+
+
 # ---- build_real_leaf_mesh ---------------------------------------------------
 
 
@@ -319,3 +367,82 @@ def test_build_real_leaf_mesh_rejects_bad_input() -> None:
         build_real_leaf_mesh(height_total_m=10.0, landing_radius_m=0.0, twist_total_deg=0.0)
     with pytest.raises(ValueError):
         build_real_leaf_mesh(height_total_m=10.0, landing_radius_m=1.0, twist_total_deg=0.0, n_u=1)
+
+
+# ---- build_leaf_v2_mesh (plan §9 spine + zones + profile + rim + channel) --
+
+
+def test_build_leaf_v2_mesh_counts() -> None:
+    from gh.scripts.leaf_generator import build_leaf_v2_mesh
+
+    n_v, n_theta = 10, 16
+    verts, faces = build_leaf_v2_mesh(
+        height_total_m=14.0,
+        landing_radius_m=1.2,
+        twist_total_deg=60.0,
+        n_v=n_v,
+        n_theta=n_theta,
+    )
+    assert len(verts) == 3 * n_v * n_theta
+    assert len(faces) == 3 * 2 * (n_v - 1) * n_theta
+
+
+def test_build_leaf_v2_mesh_no_nan_and_z_bounded() -> None:
+    import math
+
+    from gh.scripts.leaf_generator import build_leaf_v2_mesh
+
+    height = 14.0
+    verts, _ = build_leaf_v2_mesh(
+        height_total_m=height,
+        landing_radius_m=1.2,
+        twist_total_deg=0.0,
+    )
+    for v in verts:
+        for c in v:
+            assert math.isfinite(c)
+    z_values = [v[2] for v in verts]
+    assert min(z_values) >= -2.0
+    assert max(z_values) <= height + 3.0
+
+
+def test_build_leaf_v2_mesh_twist_rotates_xy() -> None:
+    """Non-zero twist should change xy positions vs twist=0."""
+    from gh.scripts.leaf_generator import build_leaf_v2_mesh
+
+    verts_a, _ = build_leaf_v2_mesh(
+        height_total_m=14.0,
+        landing_radius_m=1.2,
+        twist_total_deg=0.0,
+        n_v=6,
+        n_theta=8,
+    )
+    verts_b, _ = build_leaf_v2_mesh(
+        height_total_m=14.0,
+        landing_radius_m=1.2,
+        twist_total_deg=180.0,
+        n_v=6,
+        n_theta=8,
+    )
+    differ = any(
+        abs(a[0] - b[0]) > 1e-6 or abs(a[1] - b[1]) > 1e-6
+        for a, b in zip(verts_a, verts_b, strict=False)
+    )
+    assert differ, "twist=180 should change xy from twist=0"
+
+
+def test_build_leaf_v2_mesh_rejects_bad_input() -> None:
+    import pytest
+
+    from gh.scripts.leaf_generator import build_leaf_v2_mesh
+
+    with pytest.raises(ValueError):
+        build_leaf_v2_mesh(height_total_m=0.0, landing_radius_m=1.0, twist_total_deg=0.0)
+    with pytest.raises(ValueError):
+        build_leaf_v2_mesh(height_total_m=10.0, landing_radius_m=0.0, twist_total_deg=0.0)
+    with pytest.raises(ValueError):
+        build_leaf_v2_mesh(height_total_m=10.0, landing_radius_m=1.0, twist_total_deg=0.0, n_v=2)
+    with pytest.raises(ValueError):
+        build_leaf_v2_mesh(
+            height_total_m=10.0, landing_radius_m=1.0, twist_total_deg=0.0, n_theta=2
+        )
