@@ -18,6 +18,7 @@ import trimesh
 
 from gh.scripts.export_candidate import export_candidate
 from gh.scripts.import_results import get_score_or_none, import_results
+from gh.scripts.leaf_generator import build_mvp_mesh, build_params_dict
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 GH_SCRIPTS_DIR = REPO_ROOT / "gh" / "scripts"
@@ -104,3 +105,63 @@ def test_export_candidate_writes_valid_params_for_leaflab_validate(
     with (out_dir / "params.json").open(encoding="utf-8") as fh:
         loaded = load_params(json.load(fh))
     assert loaded.candidate_id == sample_params_dict["candidate_id"]
+
+
+def test_build_mvp_mesh_counts() -> None:
+    verts, faces = build_mvp_mesh(
+        height_total_m=14.0,
+        landing_radius_m=1.2,
+        twist_total_deg=90.0,
+        n_z=10,
+        n_theta=20,
+    )
+    assert len(verts) == 10 * 20
+    assert len(faces) == (10 - 1) * 20 * 2
+
+
+def test_build_mvp_mesh_z_bounds() -> None:
+    verts, _ = build_mvp_mesh(14.5, 1.0, 0.0, n_z=8, n_theta=12)
+    zs = [v[2] for v in verts]
+    assert min(zs) == 0.0
+    assert max(zs) == pytest.approx(14.5)
+
+
+def test_build_mvp_mesh_rejects_bad_input() -> None:
+    with pytest.raises(ValueError, match="height_total_m"):
+        build_mvp_mesh(0.0, 1.0, 0.0)
+    with pytest.raises(ValueError, match="landing_radius_m"):
+        build_mvp_mesh(14.0, -0.5, 0.0)
+    with pytest.raises(ValueError, match="n_z >= 2"):
+        build_mvp_mesh(14.0, 1.0, 0.0, n_z=1, n_theta=12)
+
+
+def test_build_params_dict_validates_via_leaflab() -> None:
+    from leaflab.schema.params_schema import load_params
+
+    pd = build_params_dict(
+        candidate_id="cand_mvp",
+        height_total_m=14.0,
+        landing_radius_m=1.5,
+        twist_total_deg=120.0,
+    )
+    parsed = load_params(pd)
+    assert parsed.candidate_id == "cand_mvp"
+    assert parsed.geometry.height_total_m == pytest.approx(14.0)
+    assert parsed.geometry.spine.twist_total_deg == pytest.approx(120.0)
+    assert parsed.geometry.leafs[0].landing_radius_m == pytest.approx(1.5)
+
+
+def test_leaf_generator_full_export_round_trip(tmp_path: Path) -> None:
+    """leaf_generator output -> export_candidate -> leaflab schema validation."""
+    from leaflab.schema.params_schema import load_params
+
+    verts, faces = build_mvp_mesh(14.0, 1.2, 60.0, n_z=8, n_theta=12)
+    pd = build_params_dict("cand_e2e", 14.0, 1.2, 60.0)
+    out_dir = tmp_path / "cand_e2e"
+    summary = export_candidate(verts, faces, pd, out_dir)
+
+    assert summary["vertex_count"] == len(verts)
+    assert summary["triangle_count"] == len(faces)
+    assert (out_dir / "geometry" / "leaf.stl").exists()
+    with (out_dir / "params.json").open(encoding="utf-8") as fh:
+        load_params(json.load(fh))
