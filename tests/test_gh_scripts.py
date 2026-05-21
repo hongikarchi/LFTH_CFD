@@ -218,6 +218,62 @@ def test_water_curtain_fall_endpoint_rejects_bad_inputs() -> None:
         fall_trajectory_endpoint((0.0, 0.0, 15.0), fall_height_m=15.0, gravity_mps2=0.0)
 
 
+def test_water_curtain_nozzles_velocity_shared() -> None:
+    from gh.scripts.water_curtain import nozzles_from_points
+
+    nozzles = nozzles_from_points(
+        [(0.0, 0.0, 15.0), (1.0, 0.0, 15.0)],
+        flow_rate_lpm=45.0,
+        velocity_mps_shared=(0.5, 0.0, -17.0),
+    )
+    assert nozzles[0]["velocity_mps"] == [0.5, 0.0, -17.0]
+    assert nozzles[1]["velocity_mps"] == [0.5, 0.0, -17.0]
+    # ensure each nozzle has its own list (no aliasing)
+    assert nozzles[0]["velocity_mps"] is not nozzles[1]["velocity_mps"]
+
+
+def test_water_curtain_velocity_from_tilt_vertical_default() -> None:
+    import math
+
+    from gh.scripts.water_curtain import velocity_from_tilt
+
+    v = velocity_from_tilt(fall_height_m=15.0, tilt_deg=0.0)
+    expected_mag = math.sqrt(2.0 * 9.81 * 15.0)
+    assert abs(v[0]) < 1e-9
+    assert abs(v[1]) < 1e-9
+    assert abs(v[2] + expected_mag) < 1e-6
+
+
+def test_water_curtain_velocity_from_tilt_45_x_axis() -> None:
+    import math
+
+    from gh.scripts.water_curtain import velocity_from_tilt
+
+    v_mag = math.sqrt(2.0 * 9.81 * 15.0)
+    v = velocity_from_tilt(fall_height_m=15.0, tilt_deg=45.0, azimuth_deg=0.0)
+    # x = v_mag*sin(45) = v_mag/sqrt(2); z = -v_mag*cos(45)
+    expected_h = v_mag / math.sqrt(2.0)
+    assert abs(v[0] - expected_h) < 1e-6
+    assert abs(v[1]) < 1e-9
+    assert abs(v[2] + expected_h) < 1e-6
+
+
+def test_water_curtain_fall_endpoint_parabolic_drift() -> None:
+    """Horizontal velocity → parabolic projection lands downstream."""
+    from gh.scripts.water_curtain import fall_trajectory_endpoint
+
+    end = fall_trajectory_endpoint(
+        (0.0, 0.0, 15.0),
+        fall_height_m=15.0,
+        velocity_mps=(5.0, 0.0, -10.0),
+    )
+    # z lands at 0 by definition
+    assert abs(end[2]) < 1e-9
+    # drift along +x; should be positive and finite
+    assert end[0] > 0.0
+    assert end[0] < 50.0  # sanity bound
+
+
 # ---- build_real_leaf_mesh ---------------------------------------------------
 
 

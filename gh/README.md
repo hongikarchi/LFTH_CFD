@@ -111,9 +111,11 @@ import numpy as np
 | `landing_radius_m` | Number Slider | range 0.5–3.0, value 1.2 |
 | `twist_total_deg` | Number Slider | range -180–180, value 60.0 |
 | `candidate_id` | Panel (text) | `cand_0001` |
-| `nozzle_points` | Point param (multi-input) | Rhino 캔버스에서 직접 점 배치 |
+| `nozzle_points` | Point param (multi-input) | Rhino 캔버스에서 직접 점 배치 또는 Construct Point + 3 sliders |
 | `flow_rate_lpm` | Number Slider | range 10–100, value 45.0 |
-| `build` | Python 3 Script | 6 input: 위 6개 / 4 output: `a=mesh`, `b=params_json`, `c=candidate_id`, `d=curtain_curves` |
+| `nozzle_tilt_deg` | Number Slider | range 0–60, value 0 (수직). >0 = 수평 방향 분사 |
+| `nozzle_azimuth_deg` | Number Slider | range -180–180, value 0. tilt 방향 (0=+X, 90=+Y) |
+| `build` | Python 3 Script | 8 input / 4 output: `a=mesh`, `b=params_json`, `c=candidate_id`, `d=curtain_curves` |
 | `export` | Python 3 Script | 3 input: `mesh`, `params_dict` (a.k.a. b from build), `candidate_id` / 1 output: `a=summary` |
 | `summary` | Panel | export 결과 표시 |
 
@@ -126,6 +128,8 @@ twist_total_deg ──┘
 candidate_id ────→ build.candidate_id
 nozzle_points ───→ build.nozzle_points
 flow_rate_lpm ───→ build.flow_rate_lpm
+nozzle_tilt_deg ─→ build.nozzle_tilt_deg
+nozzle_azimuth_deg → build.nozzle_azimuth_deg
 
 build.a (mesh)       ─→ export.mesh
 build.b (params_json) → export.params_dict
@@ -141,7 +145,7 @@ Rhino doc 단위(mm/m 등)와 무관하게 mesh + curtain curves 가 실제 크�
 
 ```python
 # r: trimesh
-import sys, pathlib, json
+import sys, pathlib, json, importlib
 import Rhino
 import Rhino.Geometry as rg
 
@@ -149,8 +153,15 @@ REPO_ROOT = pathlib.Path(r"C:\Users\user\Documents\LFTH_CFD")
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
+# hot-reload — picks up gh/scripts/*.py edits without Rhino restart
+import gh.scripts.leaf_generator
+import gh.scripts.water_curtain
+importlib.reload(gh.scripts.leaf_generator)
+importlib.reload(gh.scripts.water_curtain)
 from gh.scripts.leaf_generator import build_real_leaf_mesh, build_params_dict
-from gh.scripts.water_curtain import nozzles_from_points, fall_trajectory_endpoint
+from gh.scripts.water_curtain import (
+    nozzles_from_points, fall_trajectory_endpoint, velocity_from_tilt,
+)
 
 doc = Rhino.RhinoDoc.ActiveDoc
 m_to_doc = Rhino.RhinoMath.UnitScale(Rhino.UnitSystem.Meters, doc.ModelUnitSystem)
@@ -161,7 +172,18 @@ verts, faces = build_real_leaf_mesh(height_total_m, landing_radius_m, twist_tota
 
 # doc-unit Points → meters
 points_xyz = [(p.X * doc_to_m, p.Y * doc_to_m, p.Z * doc_to_m) for p in nozzle_points]
-nozzles = nozzles_from_points(points_xyz, flow_rate_lpm)
+
+# tilt-driven initial velocity (shared across all nozzles); fall_height
+# is read from build_params_dict default (15 m) since it's not a slider.
+fall_h_default = 15.0
+velocity_shared = velocity_from_tilt(
+    fall_height_m=fall_h_default,
+    tilt_deg=nozzle_tilt_deg,
+    azimuth_deg=nozzle_azimuth_deg,
+)
+nozzles = nozzles_from_points(
+    points_xyz, flow_rate_lpm, velocity_mps_shared=velocity_shared
+)
 
 params_dict = build_params_dict(
     candidate_id, height_total_m, landing_radius_m, twist_total_deg, nozzles=nozzles
@@ -177,11 +199,13 @@ for f in faces:
 mesh.Normals.ComputeNormals()
 mesh.Compact()
 
-# Free-fall preview lines (one per nozzle, meter→doc scale)
+# Free-fall preview lines (one per nozzle, meter→doc scale).
+# Parabolic endpoint when nozzle_tilt_deg > 0.
 curtain_curves = []
 for nz in nozzles:
     sp_m = tuple(nz["position"])
-    ep_m = fall_trajectory_endpoint(sp_m, fall_h)
+    vel = tuple(nz["velocity_mps"]) if nz["velocity_mps"] is not None else None
+    ep_m = fall_trajectory_endpoint(sp_m, fall_h, velocity_mps=vel)
     sp = rg.Point3d(sp_m[0] * m_to_doc, sp_m[1] * m_to_doc, sp_m[2] * m_to_doc)
     ep = rg.Point3d(ep_m[0] * m_to_doc, ep_m[1] * m_to_doc, ep_m[2] * m_to_doc)
     curtain_curves.append(rg.Line(sp, ep).ToNurbsCurve())
@@ -198,13 +222,16 @@ mesh.Vertices 는 doc-unit, STL/params 는 항상 meter — 역변환 필요.
 
 ```python
 # r: trimesh
-import sys, pathlib, json
+import sys, pathlib, json, importlib
 import Rhino
 
 REPO_ROOT = pathlib.Path(r"C:\Users\user\Documents\LFTH_CFD")
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
+# hot-reload
+import gh.scripts.export_candidate
+importlib.reload(gh.scripts.export_candidate)
 from gh.scripts.export_candidate import export_candidate
 
 doc = Rhino.RhinoDoc.ActiveDoc
