@@ -123,16 +123,17 @@ def test_particle_field_from_nozzles_shape() -> None:
     from leaflab.schema.params_schema import NozzleParams
 
     nozzles = [
-        NozzleParams(position=(0.0, 0.0, 15.0), flow_rate_lpm=45.0,
-                     velocity_mps=None, nozzle_id="n0"),
-        NozzleParams(position=(1.0, 0.0, 15.0), flow_rate_lpm=45.0,
-                     velocity_mps=None, nozzle_id="n1"),
-        NozzleParams(position=(0.0, 1.0, 15.0), flow_rate_lpm=45.0,
-                     velocity_mps=None, nozzle_id="n2"),
+        NozzleParams(
+            position=(0.0, 0.0, 15.0), flow_rate_lpm=45.0, velocity_mps=None, nozzle_id="n0"
+        ),
+        NozzleParams(
+            position=(1.0, 0.0, 15.0), flow_rate_lpm=45.0, velocity_mps=None, nozzle_id="n1"
+        ),
+        NozzleParams(
+            position=(0.0, 1.0, 15.0), flow_rate_lpm=45.0, velocity_mps=None, nozzle_id="n2"
+        ),
     ]
-    field = particle_field_from_nozzles(
-        nozzles, fall_height_m=15.0, n_per_nozzle=20, seed=1
-    )
+    field = particle_field_from_nozzles(nozzles, fall_height_m=15.0, n_per_nozzle=20, seed=1)
     assert field.positions.shape == (60, 3)
     assert field.velocities.shape == (60, 3)
 
@@ -143,10 +144,12 @@ def test_particle_field_from_nozzles_clustered_per_nozzle() -> None:
     from leaflab.schema.params_schema import NozzleParams
 
     nozzles = [
-        NozzleParams(position=(0.0, 0.0, 15.0), flow_rate_lpm=45.0,
-                     velocity_mps=None, nozzle_id="n0"),
-        NozzleParams(position=(5.0, 0.0, 15.0), flow_rate_lpm=45.0,
-                     velocity_mps=None, nozzle_id="n1"),
+        NozzleParams(
+            position=(0.0, 0.0, 15.0), flow_rate_lpm=45.0, velocity_mps=None, nozzle_id="n0"
+        ),
+        NozzleParams(
+            position=(5.0, 0.0, 15.0), flow_rate_lpm=45.0, velocity_mps=None, nozzle_id="n1"
+        ),
     ]
     field = particle_field_from_nozzles(
         nozzles, fall_height_m=15.0, n_per_nozzle=50, jitter_m=0.05, seed=2
@@ -167,13 +170,12 @@ def test_particle_field_from_nozzles_determinism() -> None:
     from leaflab.schema.params_schema import NozzleParams
 
     nozzles = [
-        NozzleParams(position=(0.0, 0.0, 15.0), flow_rate_lpm=45.0,
-                     velocity_mps=None, nozzle_id="n0"),
+        NozzleParams(
+            position=(0.0, 0.0, 15.0), flow_rate_lpm=45.0, velocity_mps=None, nozzle_id="n0"
+        ),
     ]
-    a = particle_field_from_nozzles(nozzles, fall_height_m=15.0,
-                                    n_per_nozzle=30, seed=42)
-    b = particle_field_from_nozzles(nozzles, fall_height_m=15.0,
-                                    n_per_nozzle=30, seed=42)
+    a = particle_field_from_nozzles(nozzles, fall_height_m=15.0, n_per_nozzle=30, seed=42)
+    b = particle_field_from_nozzles(nozzles, fall_height_m=15.0, n_per_nozzle=30, seed=42)
     assert np.array_equal(a.positions, b.positions)
     assert np.array_equal(a.velocities, b.velocities)
 

@@ -1,7 +1,7 @@
 """Doc-unit point list -> nozzle dicts + free-fall endpoint helper.
 
 Used by gh/LeafGenerator.gh build component. Runs inside Rhino 8's
-embedded CPython 3.9 - MUST NOT import leaflab and MUST avoid 3.10+
+embedded CPython 3.9 - MUST NOT import ``leaflab`` and MUST avoid 3.10+
 syntax (use Optional/List/Tuple/Dict from typing, no PEP 604 unions).
 """
 
@@ -28,12 +28,14 @@ def nozzles_from_points(
         raise ValueError("flow_rate_lpm must be > 0, got {0}".format(flow_rate_lpm))
     out: List[Dict[str, Any]] = []
     for i, (x, y, z) in enumerate(points_xyz_doc):
-        out.append({
-            "position": [x * doc_to_m, y * doc_to_m, z * doc_to_m],
-            "flow_rate_lpm": float(flow_rate_lpm),
-            "velocity_mps": None,
-            "nozzle_id": "n{0}".format(i),
-        })
+        out.append(
+            {
+                "position": [x * doc_to_m, y * doc_to_m, z * doc_to_m],
+                "flow_rate_lpm": float(flow_rate_lpm),
+                "velocity_mps": None,
+                "nozzle_id": "n{0}".format(i),
+            }
+        )
     return out
 
 

@@ -67,8 +67,8 @@ def build_mvp_mesh(
 # Layout per leaf: (z_frac, length_factor, camber_factor, rim_h_factor,
 #                   pitch_deg, twist_offset_frac)
 _LEAF_SPECS: List[Tuple[float, float, float, float, float, float]] = [
-    (0.95, 1.6, 0.20, 0.08, 14.0, 0.0),    # L1 landing — top, large
-    (0.55, 1.1, 0.16, 0.06, 24.0, 0.4),    # L2 flow — mid
+    (0.95, 1.6, 0.20, 0.08, 14.0, 0.0),  # L1 landing — top, large
+    (0.55, 1.1, 0.16, 0.06, 24.0, 0.4),  # L2 flow — mid
     (0.20, 0.75, 0.12, 0.04, 35.0, 0.75),  # L3 discharge — bottom
 ]
 
@@ -97,16 +97,20 @@ def build_real_leaf_mesh(
     all_verts: List[Vertex] = []
     all_faces: List[TriFace] = []
 
-    for (z_frac, length_factor, camber_factor, rim_h_factor,
-         pitch_deg, twist_offset_frac) in _LEAF_SPECS:
-        a = landing_radius_m * length_factor        # ellipse semi-major (m)
-        b = a * 0.7                                  # semi-minor (aspect)
+    for (
+        z_frac,
+        length_factor,
+        camber_factor,
+        rim_h_factor,
+        pitch_deg,
+        twist_offset_frac,
+    ) in _LEAF_SPECS:
+        a = landing_radius_m * length_factor  # ellipse semi-major (m)
+        b = a * 0.7  # semi-minor (aspect)
         camber_m = camber_factor * a
         rim_m = rim_h_factor * a
         z_offset = z_frac * height_total_m
-        twist_rad = math.radians(
-            twist_total_deg * (z_frac + twist_offset_frac)
-        )
+        twist_rad = math.radians(twist_total_deg * (z_frac + twist_offset_frac))
         pitch_rad = math.radians(pitch_deg)
         cp = math.cos(pitch_rad)
         sp = math.sin(pitch_rad)
@@ -115,7 +119,7 @@ def build_real_leaf_mesh(
 
         base_idx = len(all_verts)
         for i in range(n_u):
-            u = i / float(n_u - 1)             # 0 = centre, 1 = edge
+            u = i / float(n_u - 1)  # 0 = centre, 1 = edge
             for j in range(n_theta):
                 theta = 2.0 * math.pi * j / n_theta
                 x_e = a * u * math.cos(theta)

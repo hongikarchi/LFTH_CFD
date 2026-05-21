@@ -262,6 +262,4 @@ def test_build_real_leaf_mesh_rejects_bad_input() -> None:
     with pytest.raises(ValueError):
         build_real_leaf_mesh(height_total_m=10.0, landing_radius_m=0.0, twist_total_deg=0.0)
     with pytest.raises(ValueError):
-        build_real_leaf_mesh(
-            height_total_m=10.0, landing_radius_m=1.0, twist_total_deg=0.0, n_u=1
-        )
+        build_real_leaf_mesh(height_total_m=10.0, landing_radius_m=1.0, twist_total_deg=0.0, n_u=1)
