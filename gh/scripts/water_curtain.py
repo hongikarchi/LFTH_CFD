@@ -287,6 +287,19 @@ def simulate_water_path_polyline(
                 ray_directions=dirs,
                 multiple_hits=False,
             )
+            # Fallback for ray-through-apex hollow: if first ray from
+            # near-axis nozzle misses entirely, retry with tiny xy offset
+            # so the ray bypasses the central apex degeneracy.
+            if bounce_idx == 0 and len(locs) == 0 and abs(pos[0]) < 0.2 and abs(pos[1]) < 0.2:
+                offset_origins = _np.asarray([[pos[0] + 0.2, pos[1] + 0.0, pos[2]]], dtype=float)
+                locs, idx_ray, idx_tri = rmi.intersects_location(
+                    ray_origins=offset_origins,
+                    ray_directions=dirs,
+                    multiple_hits=False,
+                )
+                if len(locs) > 0:
+                    pos = (pos[0] + 0.2, pos[1], pos[2])
+                    points[-1] = pos
         except Exception:
             locs = []
             idx_tri = []
