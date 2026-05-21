@@ -16,7 +16,7 @@ NOT use 3.10+ syntax.
 from __future__ import annotations
 
 import math
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 Vertex = Tuple[float, float, float]
 TriFace = Tuple[int, int, int]
@@ -64,11 +64,96 @@ def build_mvp_mesh(
     return verts, faces
 
 
+# Layout per leaf: (z_frac, length_factor, camber_factor, rim_h_factor,
+#                   pitch_deg, twist_offset_frac)
+_LEAF_SPECS: List[Tuple[float, float, float, float, float, float]] = [
+    (0.95, 1.6, 0.20, 0.08, 14.0, 0.0),  # L1 landing — top, large
+    (0.55, 1.1, 0.16, 0.06, 24.0, 0.4),  # L2 flow — mid
+    (0.20, 0.75, 0.12, 0.04, 35.0, 0.75),  # L3 discharge — bottom
+]
+
+
+def build_real_leaf_mesh(
+    height_total_m: float,
+    landing_radius_m: float,
+    twist_total_deg: float,
+    n_u: int = 12,
+    n_theta: int = 24,
+) -> Tuple[List[Vertex], List[TriFace]]:
+    """3-leaf dome stack: each leaf is an ellipsoidal cap with rim curl.
+
+    Same three slider inputs as ``build_mvp_mesh`` so the existing GH
+    wrappers stay compatible. Mesh is the union of three independent
+    leaf surfaces (L1 landing, L2 flow, L3 discharge), each tilted by
+    its own pitch and offset by a fraction of the global twist.
+    """
+    if height_total_m <= 0:
+        raise ValueError("height_total_m must be > 0")
+    if landing_radius_m <= 0:
+        raise ValueError("landing_radius_m must be > 0")
+    if n_u < 2 or n_theta < 3:
+        raise ValueError("n_u >= 2 and n_theta >= 3 required")
+
+    all_verts: List[Vertex] = []
+    all_faces: List[TriFace] = []
+
+    for (
+        z_frac,
+        length_factor,
+        camber_factor,
+        rim_h_factor,
+        pitch_deg,
+        twist_offset_frac,
+    ) in _LEAF_SPECS:
+        a = landing_radius_m * length_factor  # ellipse semi-major (m)
+        b = a * 0.7  # semi-minor (aspect)
+        camber_m = camber_factor * a
+        rim_m = rim_h_factor * a
+        z_offset = z_frac * height_total_m
+        twist_rad = math.radians(twist_total_deg * (z_frac + twist_offset_frac))
+        pitch_rad = math.radians(pitch_deg)
+        cp = math.cos(pitch_rad)
+        sp = math.sin(pitch_rad)
+        ct = math.cos(twist_rad)
+        st = math.sin(twist_rad)
+
+        base_idx = len(all_verts)
+        for i in range(n_u):
+            u = i / float(n_u - 1)  # 0 = centre, 1 = edge
+            for j in range(n_theta):
+                theta = 2.0 * math.pi * j / n_theta
+                x_e = a * u * math.cos(theta)
+                y_e = b * u * math.sin(theta)
+                z_dome = camber_m * (1.0 - u * u)
+                rim_frac = max(0.0, (u - 0.85) / 0.15)
+                z_rim = rim_m * rim_frac * rim_frac
+                z_local = z_dome + z_rim
+                # pitch about world Y-axis (rotates x and z)
+                x_p = x_e * cp + z_local * sp
+                z_p = -x_e * sp + z_local * cp
+                # global twist about world Z-axis (rotates x and y)
+                x_g = x_p * ct - y_e * st
+                y_g = x_p * st + y_e * ct
+                all_verts.append((x_g, y_g, z_offset + z_p))
+
+        for i in range(n_u - 1):
+            for j in range(n_theta):
+                a_i = base_idx + i * n_theta + j
+                b_i = base_idx + i * n_theta + ((j + 1) % n_theta)
+                c_i = base_idx + (i + 1) * n_theta + ((j + 1) % n_theta)
+                d_i = base_idx + (i + 1) * n_theta + j
+                all_faces.append((a_i, b_i, c_i))
+                all_faces.append((a_i, c_i, d_i))
+
+    return all_verts, all_faces
+
+
 def build_params_dict(
     candidate_id: str,
     height_total_m: float,
     landing_radius_m: float,
     twist_total_deg: float,
+    nozzles: Optional[List[Dict[str, Any]]] = None,
 ) -> Dict[str, Any]:
     """Build a schema-1.0 params dict with slider-driven overrides.
 
@@ -80,7 +165,7 @@ def build_params_dict(
     return {
         "schema_version": "1.0",
         "candidate_id": candidate_id,
-        "description": "Phase B MVP - tapered twisted cylinder",
+        "description": "Phase D pre - 3-leaf dome stack",
         "global_constraints": {
             "max_height_m": 15.0,
             "min_height_m": 10.0,
@@ -162,6 +247,7 @@ def build_params_dict(
             "flow_rate_max_lpm": 60.0,
             "target_drain_position": [0.0, 0.0, 0.0],
             "pond_radius_m": 4.5,
+            "nozzles": nozzles,
         },
         "material": {
             "base_material": "brass_casting",

@@ -116,3 +116,105 @@ def test_from_params(sample_params_dict: dict[str, object]) -> None:
     r = np.hypot(f.positions[:, 0], f.positions[:, 1])
     assert (r >= 1.0 - 1e-9).all()
     assert (r <= 2.0 + 1e-9).all()
+
+
+def test_particle_field_from_nozzles_shape() -> None:
+    from leaflab.fast_sim.particle_drop import particle_field_from_nozzles
+    from leaflab.schema.params_schema import NozzleParams
+
+    nozzles = [
+        NozzleParams(
+            position=(0.0, 0.0, 15.0), flow_rate_lpm=45.0, velocity_mps=None, nozzle_id="n0"
+        ),
+        NozzleParams(
+            position=(1.0, 0.0, 15.0), flow_rate_lpm=45.0, velocity_mps=None, nozzle_id="n1"
+        ),
+        NozzleParams(
+            position=(0.0, 1.0, 15.0), flow_rate_lpm=45.0, velocity_mps=None, nozzle_id="n2"
+        ),
+    ]
+    field = particle_field_from_nozzles(nozzles, fall_height_m=15.0, n_per_nozzle=20, seed=1)
+    assert field.positions.shape == (60, 3)
+    assert field.velocities.shape == (60, 3)
+
+
+def test_particle_field_from_nozzles_clustered_per_nozzle() -> None:
+    """Each block of n_per_nozzle particles clusters near its nozzle."""
+    from leaflab.fast_sim.particle_drop import particle_field_from_nozzles
+    from leaflab.schema.params_schema import NozzleParams
+
+    nozzles = [
+        NozzleParams(
+            position=(0.0, 0.0, 15.0), flow_rate_lpm=45.0, velocity_mps=None, nozzle_id="n0"
+        ),
+        NozzleParams(
+            position=(5.0, 0.0, 15.0), flow_rate_lpm=45.0, velocity_mps=None, nozzle_id="n1"
+        ),
+    ]
+    field = particle_field_from_nozzles(
+        nozzles, fall_height_m=15.0, n_per_nozzle=50, jitter_m=0.05, seed=2
+    )
+    # within each 50-particle block, positions stay close to that nozzle
+    for nz_i, nz in enumerate(nozzles):
+        block = field.positions[nz_i * 50 : (nz_i + 1) * 50]
+        dxy = block[:, :2] - np.array(nz.position[:2])
+        d = np.linalg.norm(dxy, axis=1)
+        assert (d <= 0.05 + 1e-9).all(), (
+            f"nozzle {nz_i}: particle drift exceeds jitter, max={d.max()}"
+        )
+        assert np.allclose(block[:, 2], nz.position[2])
+
+
+def test_particle_field_from_nozzles_determinism() -> None:
+    from leaflab.fast_sim.particle_drop import particle_field_from_nozzles
+    from leaflab.schema.params_schema import NozzleParams
+
+    nozzles = [
+        NozzleParams(
+            position=(0.0, 0.0, 15.0), flow_rate_lpm=45.0, velocity_mps=None, nozzle_id="n0"
+        ),
+    ]
+    a = particle_field_from_nozzles(nozzles, fall_height_m=15.0, n_per_nozzle=30, seed=42)
+    b = particle_field_from_nozzles(nozzles, fall_height_m=15.0, n_per_nozzle=30, seed=42)
+    assert np.array_equal(a.positions, b.positions)
+    assert np.array_equal(a.velocities, b.velocities)
+
+
+def test_particle_field_from_params_dispatches_to_nozzles(
+    sample_params_dict: dict,
+) -> None:
+    sample_params_dict["water"]["nozzles"] = [
+        {
+            "position": [0.0, 0.0, 20.0],
+            "flow_rate_lpm": 45.0,
+            "velocity_mps": None,
+            "nozzle_id": "n0",
+        },
+        {
+            "position": [3.0, 0.0, 20.0],
+            "flow_rate_lpm": 45.0,
+            "velocity_mps": None,
+            "nozzle_id": "n1",
+        },
+    ]
+    params = load_params(sample_params_dict)
+    field = particle_field_from_params(params, n=40, seed=7)
+    # 40 // 2 nozzles = 20 per nozzle => 40 total
+    assert field.positions.shape == (40, 3)
+    # all positions stay near the two nozzle XY centres, NOT on the annulus
+    dxy_0 = np.linalg.norm(field.positions[:20, :2] - np.array([0.0, 0.0]), axis=1)
+    dxy_1 = np.linalg.norm(field.positions[20:, :2] - np.array([3.0, 0.0]), axis=1)
+    assert (dxy_0 < 0.5).all()
+    assert (dxy_1 < 0.5).all()
+
+
+def test_particle_field_from_params_falls_back_to_annulus(
+    sample_params_dict: dict,
+) -> None:
+    """When nozzles is None, annulus sampling is used."""
+    params = load_params(sample_params_dict)
+    assert params.water.nozzles is None
+    field = particle_field_from_params(params, n=100, seed=3)
+    r = np.hypot(field.positions[:, 0], field.positions[:, 1])
+    assert (r >= 1.0 - 1e-9).all()
+    assert (r <= 2.0 + 1e-9).all()

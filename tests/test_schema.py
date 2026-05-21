@@ -121,3 +121,46 @@ def test_algorithm_version_override_on_metrics() -> None:
         algorithm_version="trimesh-2.1.0",
     )
     assert g.algorithm_version == "trimesh-2.1.0"
+
+
+def test_nozzles_default_none(sample_params_dict: dict) -> None:
+    """Existing params dicts (no nozzles key) parse with nozzles=None."""
+    params = load_params(sample_params_dict)
+    assert params.water.nozzles is None
+
+
+def test_nozzles_list_parses(sample_params_dict: dict) -> None:
+    from leaflab.schema.params_schema import NozzleParams
+
+    sample_params_dict["water"]["nozzles"] = [
+        {
+            "position": [0.0, 0.0, 15.0],
+            "flow_rate_lpm": 45.0,
+            "velocity_mps": None,
+            "nozzle_id": "n0",
+        },
+        {
+            "position": [1.0, 0.5, 15.0],
+            "flow_rate_lpm": 30.0,
+            "velocity_mps": [0.0, 0.0, -17.2],
+            "nozzle_id": "n1",
+        },
+    ]
+    params = load_params(sample_params_dict)
+    assert params.water.nozzles is not None
+    assert len(params.water.nozzles) == 2
+    assert isinstance(params.water.nozzles[0], NozzleParams)
+    assert params.water.nozzles[1].velocity_mps == (0.0, 0.0, -17.2)
+
+
+def test_nozzle_flow_rate_must_be_positive(sample_params_dict: dict) -> None:
+    sample_params_dict["water"]["nozzles"] = [
+        {
+            "position": [0.0, 0.0, 15.0],
+            "flow_rate_lpm": 0.0,  # invalid
+            "velocity_mps": None,
+            "nozzle_id": "n0",
+        }
+    ]
+    with pytest.raises(ValidationError):
+        load_params(sample_params_dict)
