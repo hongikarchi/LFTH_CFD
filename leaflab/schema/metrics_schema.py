@@ -114,12 +114,34 @@ class ScoreV1(StrictModel):
     notes: list[str] = Field(default_factory=list)
 
 
+class GeometryCheckV1(StrictModel):
+    """Output of `leaflab check-geometry` — STL sanity check (scale, height, manifold, normals)."""
+
+    schema_version: str = Field(default=SchemaVersion.V1_0.value)
+    candidate_id: str
+    stl_path: str
+    height_m: float = Field(ge=0)
+    radius_m: float = Field(ge=0)
+    bbox_min: tuple[float, float, float]
+    bbox_max: tuple[float, float, float]
+    surface_area_m2: float = Field(ge=0)
+    volume_estimate_m3: float
+    triangle_count: int = Field(ge=0)
+    vertex_count: int = Field(ge=0)
+    is_watertight: bool
+    is_manifold: bool
+    normal_consistency: float = Field(ge=0, le=1)
+    scale_warning: bool
+    warnings: list[str] = Field(default_factory=list)
+
+
 METRICS_MODELS: dict[str, dict[str, type[StrictModel]]] = {
     "fast": {SchemaVersion.V1_0.value: FastMetricsV1},
     "karamba": {SchemaVersion.V1_0.value: KarambaMetricsV1},
     "cfd": {SchemaVersion.V1_0.value: CFDMetricsV1},
     "visual": {SchemaVersion.V1_0.value: VisualMetricsV1},
     "score": {SchemaVersion.V1_0.value: ScoreV1},
+    "geometry_check": {SchemaVersion.V1_0.value: GeometryCheckV1},
 }
 
 

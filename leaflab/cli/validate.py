@@ -17,6 +17,7 @@ METRICS_KIND_BY_FILENAME = {
     "cfd_metrics.json": "cfd",
     "visual_metrics.json": "visual",
     "score.json": "score",
+    "geometry_metrics.json": "geometry_check",
 }
 
 
