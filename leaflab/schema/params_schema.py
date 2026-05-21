@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from leaflab.schema.version import SchemaVersion
 
@@ -57,10 +57,21 @@ class GeometryParams(StrictModel):
     spine: SpineParams
     leafs: list[LeafParams] = Field(min_length=1)
 
-    @field_validator("leafs")
-    @classmethod
-    def _leaf_count_matches(cls, v: list[LeafParams]) -> list[LeafParams]:
-        return v
+    @model_validator(mode="after")
+    def _check_cross_fields(self) -> GeometryParams:
+        if len(self.leafs) != self.leaf_count:
+            raise ValueError(
+                f"geometry.leaf_count={self.leaf_count} but len(leafs)={len(self.leafs)}"
+            )
+        if self.top_leaf_z_m > self.height_total_m:
+            raise ValueError(
+                f"geometry.top_leaf_z_m={self.top_leaf_z_m} > height_total_m={self.height_total_m}"
+            )
+        if self.top_leaf_z_m < self.base_z_m:
+            raise ValueError(
+                f"geometry.top_leaf_z_m={self.top_leaf_z_m} < base_z_m={self.base_z_m}"
+            )
+        return self
 
 
 class WaterParams(StrictModel):

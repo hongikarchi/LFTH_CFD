@@ -38,6 +38,7 @@ class GeometryProxyMetrics(StrictModel):
 
 class FastMetricsV1(StrictModel):
     schema_version: str = Field(default=SchemaVersion.V1_0.value)
+    algorithm_version: str = Field(default="1.0.0")
     candidate_id: str
     water_proxy: WaterProxyMetrics
     geometry_proxy: GeometryProxyMetrics
@@ -57,6 +58,7 @@ class StructureMetrics(StrictModel):
 
 class KarambaMetricsV1(StrictModel):
     schema_version: str = Field(default=SchemaVersion.V1_0.value)
+    algorithm_version: str = Field(default="1.0.0")
     candidate_id: str
     structure: StructureMetrics
 
@@ -82,6 +84,7 @@ class CFDResults(StrictModel):
 
 class CFDMetricsV1(StrictModel):
     schema_version: str = Field(default=SchemaVersion.V1_0.value)
+    algorithm_version: str = Field(default="1.0.0")
     candidate_id: str
     openfoam: OpenFOAMRunInfo
     cfd_results: CFDResults
@@ -99,12 +102,14 @@ class VisualScores(StrictModel):
 
 class VisualMetricsV1(StrictModel):
     schema_version: str = Field(default=SchemaVersion.V1_0.value)
+    algorithm_version: str = Field(default="1.0.0")
     candidate_id: str
     visual: VisualScores
 
 
 class ScoreV1(StrictModel):
     schema_version: str = Field(default=SchemaVersion.V1_0.value)
+    algorithm_version: str = Field(default="1.0.0")
     candidate_id: str
     score_water: float = Field(ge=0, le=1)
     score_structure: float = Field(ge=0, le=1)
@@ -118,6 +123,7 @@ class GeometryCheckV1(StrictModel):
     """Output of `leaflab check-geometry` — STL sanity check (scale, height, manifold, normals)."""
 
     schema_version: str = Field(default=SchemaVersion.V1_0.value)
+    algorithm_version: str = Field(default="1.0.0")
     candidate_id: str
     stl_path: str
     height_m: float = Field(ge=0)
