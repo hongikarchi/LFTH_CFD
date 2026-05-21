@@ -584,9 +584,7 @@ def test_tier6_simulate_water_path_full_cascade() -> None:
         except Exception:
             continue
         if len(idx_tri) > 0:
-            distinct_leaves.add(
-                leaf_face_id_of(int(idx_tri[0]), _DEFAULT_N_PETALS_PER_LEAF)
-            )
+            distinct_leaves.add(leaf_face_id_of(int(idx_tri[0]), _DEFAULT_N_PETALS_PER_LEAF))
     assert len(distinct_leaves) >= 4, (
         f"expected >= 4 of 6 leaves hit (real cascade), got {sorted(distinct_leaves)}"
     )

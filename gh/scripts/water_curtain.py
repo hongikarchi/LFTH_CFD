@@ -369,9 +369,7 @@ def simulate_water_path_polyline(
                 # near-horizontal — splash radially outward from world z-axis
                 xy_r = math.sqrt(hit_point[0] * hit_point[0] + hit_point[1] * hit_point[1])
                 if xy_r > 1e-3:
-                    slide_dir = _vec_unit(
-                        (hit_point[0] / xy_r, hit_point[1] / xy_r, -0.2)
-                    )
+                    slide_dir = _vec_unit((hit_point[0] / xy_r, hit_point[1] / xy_r, -0.2))
                 else:
                     slide_dir = (1.0, 0.0, -0.2)
                 base_slide_speed = max(base_slide_speed, slide_horizontal_splash_speed)
