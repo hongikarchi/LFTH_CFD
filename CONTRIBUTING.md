@@ -92,11 +92,22 @@ gh issue list --assignee @me --state open
 
 ## Claude Code 사용
 
-- 세션 시작 시 plan mode 진입 (`.claude/CLAUDE.md` 참조)
+### 세션 시작
+- plan mode 진입 (`.claude/CLAUDE.md` 참조)
 - 큰 설계 결정은 plan 파일을 `docs/plans/<date>-<topic>.md`로 보관
 - 일상 작업은 `TaskCreate`로 세션 내 분해
-- 작업 유형별 추천 agent:
-  - `cavecrew-builder` — 1~2 파일 수술적 수정
-  - `cavecrew-investigator` — read-only 코드 위치
-  - `cavecrew-reviewer` — PR/diff 리뷰
-  - `Plan` — 구현 전략 설계
+
+### 실행 전 요약표 (필수)
+substantive 작업 전 표 출력 (Claude 측 규칙, `.claude/CLAUDE.md` 참조). 사람도 PR description에 비슷한 표를 포함하면 리뷰 빨라짐.
+
+### Agent 위임
+- 1~2 파일 surgical edit → `cavecrew-builder` (Sonnet)
+- 코드 위치 / 함수 추적 → `cavecrew-investigator` (Sonnet)
+- PR/diff 리뷰 → `cavecrew-reviewer` (Sonnet)
+- 구현 전략 설계 → `Plan` (Opus)
+- 독립 작업 → 병렬 실행
+
+### PR 리뷰
+- 모든 PR 머지 전 `cavecrew-reviewer` 1회
+- 협업자 가입 후: 사람 리뷰 + Claude 리뷰 둘 다
+- `schema-change` 라벨: 사람 리뷰 필수
