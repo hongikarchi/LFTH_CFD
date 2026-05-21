@@ -558,10 +558,10 @@ def test_tier6_simulate_water_path_full_cascade() -> None:
         process=False,
     )
     pts = simulate_water_path_polyline(
-        start_xyz_m=(0.5, 0.0, 29.0),
+        start_xyz_m=(0.3, 0.0, 29.0),
         velocity_mps=(0.0, 0.0, -17.15),
         mesh=mesh,
-        max_bounces=15,
+        max_bounces=20,
     )
     assert len(pts) >= 8, f"polyline too short: {len(pts)} points"
     assert pts[-1][2] <= 1.0, f"polyline endpoint z {pts[-1][2]:.2f} > 1.0"

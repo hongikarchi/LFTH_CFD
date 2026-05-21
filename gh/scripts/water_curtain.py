@@ -214,8 +214,8 @@ def simulate_water_path_polyline(
     slide_horizontal_splash_speed: float = 0.8,
     slide_substeps: int = 5,
     slide_substep_dt_s: float = 0.05,
-    bounce_threshold: float = 0.55,
-    bounce_loss: float = 0.55,
+    bounce_threshold: float = 0.75,
+    bounce_loss: float = 0.18,
     pond_z_m: float = 0.0,
     pos_offset_m: float = 1.0e-3,
 ) -> List[PointXYZ]:
@@ -264,6 +264,7 @@ def simulate_water_path_polyline(
     )
     points: List[PointXYZ] = [pos]
     rmi = mesh.ray
+    _after_bounce = False
 
     for bounce_idx in range(max_bounces):
         if pos[2] <= pond_z_m + 0.05:
@@ -271,10 +272,12 @@ def simulate_water_path_polyline(
         speed = _vec_norm(vel)
         if speed < 1e-6:
             break
-        # First ray: use input velocity direction (water enters from nozzle).
-        # Subsequent rays after slide: shoot DOWNWARD (waterfall — gravity
-        # dominates descent between leaves; slide is the local kick only).
-        ray_dir = _vec_unit(vel) if bounce_idx == 0 else (0.0, 0.0, -1.0)
+        # First ray: input velocity direction (water from nozzle).
+        # After slide: shoot straight down (waterfall — gravity dominates
+        # between leaves). After specular bounce: follow reflected velocity
+        # direction (which is set by `_after_bounce` flag below).
+        ray_dir = _vec_unit(vel) if (bounce_idx == 0 or _after_bounce) else (0.0, 0.0, -1.0)
+        _after_bounce = False
 
         # ray-mesh intersection — find nearest hit along ray
         try:
@@ -342,14 +345,17 @@ def simulate_water_path_polyline(
                 vel[2] - 2.0 * v_dot_n * normal_unit[2],
             )
             new_vel = _vec_scale(reflected, bounce_loss)
+            # offset along REFLECTED direction so next ray escapes this face
+            refl_unit = _vec_unit(new_vel)
             new_pos = (
-                hit_point[0] + normal_unit[0] * pos_offset_m,
-                hit_point[1] + normal_unit[1] * pos_offset_m,
-                hit_point[2] + normal_unit[2] * pos_offset_m,
+                hit_point[0] + refl_unit[0] * 0.5,
+                hit_point[1] + refl_unit[1] * 0.5,
+                hit_point[2] + refl_unit[2] * 0.5,
             )
             points.append(new_pos)
             pos = new_pos
             vel = new_vel
+            _after_bounce = True  # next ray follows reflected velocity
         else:
             # surface-trace slide: tangent gravity over slide_substeps micro steps
             g_vec: PointXYZ = (0.0, 0.0, -gravity_mps2)

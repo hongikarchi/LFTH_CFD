@@ -175,33 +175,50 @@ def _default_leaves(
     if n_modules < 2:
         raise ValueError("n_modules must be >= 2, got {0}".format(n_modules))
 
-    # tight stack — top at 0.92, bottom at 0.08, evenly spaced.
-    z_top_frac = 0.92
-    z_bot_frac = 0.08
-    spacing = (z_top_frac - z_bot_frac) / (n_modules - 1)
+    # non-uniform z spacing — top crowded, bottom spread (reference look)
+    z_fracs = [0.94, 0.81, 0.66, 0.50, 0.32, 0.13][:n_modules]
+    if len(z_fracs) < n_modules:
+        z_fracs.extend([0.13 - 0.10 * (k + 1) for k in range(n_modules - len(z_fracs))])
+
+    # spiral around spine — each module offset, tilted at a different yaw
+    golden_angle_deg = 137.5
 
     leafs: List[Dict[str, Any]] = []
     for i in range(n_modules):
-        z_frac = z_top_frac - i * spacing
-        z_m = z_frac * height_total_m
-        # reverse-cone cascade — each module wider than the one above so water
-        # cascading off its outer edge always lands on the next module below.
-        size_factor = 1.0 + 0.80 * (i / max(1, n_modules - 1))
-        length_m = max(0.6, landing_radius_m * 2.0 * size_factor)
-        width_m = max(0.5, length_m * 0.78)
+        z_m = z_fracs[i] * height_total_m
+        # bottom modules bigger (reverse cone cascade), 1.5x bigger than before
+        size_factor = 1.4 + 1.0 * (i / max(1, n_modules - 1))
+        length_m = max(0.8, landing_radius_m * 2.0 * size_factor)
+        width_m = max(0.6, length_m * 0.72)
+
+        # spiral offset from spine
+        spiral_angle = math.radians(golden_angle_deg * i)
+        offset_r = landing_radius_m * 0.5
+        x_offset = offset_r * math.cos(spiral_angle)
+        y_offset = offset_r * math.sin(spiral_angle)
+
+        # pitch varies dramatically per module (3D look)
+        pitch_deg = 25.0 + 15.0 * math.sin(i * 1.5)
+        # roll around local axis — makes cup tilt sideways
+        roll_deg = 20.0 * math.sin(i * 2.3)
+
         is_top = i == 0
         leaf: Dict[str, Any] = {
             "leaf_id": "M{0}".format(i),
             "z_m": z_m,
             "length_m": length_m,
             "width_m": width_m,
-            "camber": 0.55,
-            "twist_deg": (i * 28.0) - 50.0,
-            "pitch_deg": 20.0 - 1.0 * i,  # gentler tilt lower (splash catchment)
-            "rim_height_m": 0.10,
-            "rim_thickness_m": 0.040,
-            "channel_depth_m": 0.06,
+            "camber": 0.60,
+            "twist_deg": math.degrees(spiral_angle) % 360.0 - 180.0,
+            "pitch_deg": pitch_deg,
+            "rim_height_m": 0.15,
+            "rim_thickness_m": 0.045,
+            "channel_depth_m": 0.08,
             "channel_offset_m": 0.0,
+            # visual-only extras (not in schema, consumed by build_leaf_v2_mesh)
+            "x_offset_m": x_offset,
+            "y_offset_m": y_offset,
+            "roll_deg": roll_deg,
         }
         if is_top:
             leaf["landing_angle_deg"] = 14.0
@@ -359,6 +376,12 @@ def build_leaf_v2_mesh(
         pitch_rad = math.radians(float(leaf["pitch_deg"]))
         cp = math.cos(pitch_rad)
         sp = math.sin(pitch_rad)
+        # optional 3D placement (default 0 — backward compat)
+        x_offset = float(leaf.get("x_offset_m", 0.0))
+        y_offset = float(leaf.get("y_offset_m", 0.0))
+        roll_rad = math.radians(float(leaf.get("roll_deg", 0.0)))
+        cr = math.cos(roll_rad)
+        sr = math.sin(roll_rad)
 
         if a <= 0 or b <= 0:
             raise ValueError("leaf[{0}] length_m and width_m must be > 0".format(leaf_idx))
@@ -403,12 +426,21 @@ def build_leaf_v2_mesh(
 
                     # pitch tilt in radial-up plane (tilts tip down + outward)
                     r_tilted = r * cp + z_local * sp
-                    z_tilted = -r * sp + z_local * cp
+                    z_pitched = -r * sp + z_local * cp
 
-                    # world position (centred on x=y=0, z=z_m)
-                    x_world = r_tilted * cos_t
-                    y_world = r_tilted * sin_t
-                    z_world = z_m + z_tilted
+                    # local frame xyz before roll
+                    x_local = r_tilted * cos_t
+                    y_local = r_tilted * sin_t
+                    z_loc2 = z_pitched
+
+                    # roll about x-axis (in local frame) for 3D tilt sideways
+                    y_rolled = y_local * cr - z_loc2 * sr
+                    z_rolled = y_local * sr + z_loc2 * cr
+
+                    # world position with spiral offset (x_offset, y_offset, z_m)
+                    x_world = x_offset + x_local
+                    y_world = y_offset + y_rolled
+                    z_world = z_m + z_rolled
 
                     all_verts.append((x_world, y_world, z_world))
 

@@ -53,6 +53,11 @@ class LeafParams(StrictModel):
     channel_depth_m: float = Field(gt=0)
     channel_offset_m: float
     overlap_to_next_m: float | None = None
+    # visual placement: lateral offset of leaf centre from spine, plus
+    # roll angle for 3D tilt (consumed by build_leaf_v2_mesh, not by sim)
+    x_offset_m: float = 0.0
+    y_offset_m: float = 0.0
+    roll_deg: float = 0.0
 
 
 class GeometryParams(StrictModel):
