@@ -1,0 +1,27 @@
+# Rhino/GH binary files
+*.gh binary
+*.ghx binary
+*.3dm binary
+*.gha binary
+
+# 3D model binary
+*.stl binary
+*.glb binary
+*.fbx binary
+
+# Image/video binary
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.mp4 binary
+*.mov binary
+
+# Text files — LF 강제 (Windows에서도)
+*.obj text eol=lf
+*.json text eol=lf
+*.py text eol=lf
+*.md text eol=lf
+*.sh text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+*.toml text eol=lf

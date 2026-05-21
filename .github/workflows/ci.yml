@@ -1,0 +1,58 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  lint-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+        with:
+          enable-cache: true
+
+      - name: Set up Python
+        run: uv python install 3.11
+
+      - name: Install dependencies
+        run: uv sync --all-groups
+
+      - name: Ruff lint
+        run: uv run ruff check .
+
+      - name: Ruff format check
+        run: uv run ruff format --check .
+
+      - name: Mypy
+        run: uv run mypy leaflab
+
+      - name: Pytest
+        run: uv run pytest
+
+  gh-scripts-lint:
+    runs-on: ubuntu-latest
+    name: Lint gh/scripts (Python 3.9 target — Rhino 8 compat)
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+
+      - name: Ruff with py39 target
+        run: |
+          uvx ruff check --target-version py39 gh/scripts/ || true
+          # Hard check: no leaflab import in gh/scripts (boundary rule)
+          if grep -rn "from leaflab" gh/scripts/ 2>/dev/null; then
+            echo "ERROR: gh/scripts/ must not import leaflab"
+            exit 1
+          fi
+          if grep -rn "import leaflab" gh/scripts/ 2>/dev/null; then
+            echo "ERROR: gh/scripts/ must not import leaflab"
+            exit 1
+          fi
