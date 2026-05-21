@@ -6,6 +6,7 @@ requires-python = ">=3.11"
 dependencies = [
     "numpy>=2.4.6",
     "pydantic>=2.13.4",
+    "rtree>=1.4.1",
     "scipy>=1.17.1",
     "trimesh>=4.12.2",
     "typer>=0.25.1",
@@ -48,3 +49,11 @@ addopts = "-ra"
 python_version = "3.11"
 strict = true
 exclude = ["gh/scripts/", "tests/"]
+
+[[tool.mypy.overrides]]
+module = ["trimesh.*"]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = ["leaflab.fast_sim.impact_angle", "leaflab.fast_sim.sliding"]
+disallow_untyped_calls = false
