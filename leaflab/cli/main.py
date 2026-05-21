@@ -11,7 +11,7 @@ if hasattr(sys.stderr, "reconfigure"):
 
 import typer
 
-from leaflab.cli import check_geometry, init_run, validate
+from leaflab.cli import check_geometry, init_run, migrate, validate
 
 app = typer.Typer(
     no_args_is_help=True,
@@ -21,6 +21,9 @@ app = typer.Typer(
 app.command("init-run", help="Initialize a new candidate run directory")(init_run.run)
 app.command("validate", help="Validate a params.json or metrics.json file")(validate.run)
 app.command("check-geometry", help="Validate STL mesh in a run directory")(check_geometry.run)
+app.command("migrate", help="Migrate params.json files to the current schema version")(
+    migrate.run
+)
 
 
 if __name__ == "__main__":
