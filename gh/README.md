@@ -90,11 +90,138 @@ import numpy as np
 
 ## 파일
 
-- `LeafGenerator.gh` — 메인 generator (Phase B에서 작성)
+- `LeafGenerator.gh` — 메인 generator (Phase B에서 작성, 아래 가이드)
 - `KarambaSetup.gh` — 구조 검토 (Phase E)
 - `scripts/export_candidate.py` — params + mesh → JSON/STL (Phase B)
+- `scripts/leaf_generator.py` — MVP geometry + params dict builder (Phase B)
 - `scripts/import_results.py` — 결과 JSON → GH 시각화 (Phase D 이후)
 - `scripts/export_karamba_metrics.py` — Karamba 결과 export (Phase E)
+
+---
+
+## LeafGenerator.gh — Phase B MVP 빌드 가이드
+
+`.gh`는 binary 라서 자동 생성 한계 있음(GH_MCP `add_component` 는 컴포넌트 placement만 지원, 코드 주입 불가). 한 번만 수동 빌드, 이후 git에 commit.
+
+### 컴포넌트 (캔버스 배치)
+
+| 역할 | 컴포넌트 | 기본값 권장 |
+|------|---------|------------|
+| `height_total_m` | Number Slider | range 5–15, value 14.0 |
+| `landing_radius_m` | Number Slider | range 0.5–3.0, value 1.2 |
+| `twist_total_deg` | Number Slider | range -180–180, value 60.0 |
+| `candidate_id` | Panel (text) | `cand_0001` |
+| `build` | Python 3 Script | 4 input: `height_total_m`, `landing_radius_m`, `twist_total_deg`, `candidate_id` / 3 output: `mesh`, `params_dict`, `candidate_id` |
+| `export` | Python 3 Script | 3 input: `mesh`, `params_dict`, `candidate_id` / 1 output: `summary` |
+| `summary` | Panel | (출력 표시) |
+
+### 와이어
+
+```
+height_total_m ───┐
+landing_radius_m ─┼→ build.input(0..2)
+twist_total_deg ──┘
+candidate_id ────→ build.candidate_id
+
+build.mesh ──────→ export.mesh
+build.params_dict → export.params_dict
+build.candidate_id → export.candidate_id
+
+export.summary ──→ summary panel
+```
+
+### `build` 컴포넌트 코드 (paste)
+
+```python
+# r: trimesh
+import sys, pathlib
+REPO_ROOT = pathlib.Path(r"C:\Users\user\Documents\LFTH_CFD")
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from gh.scripts.leaf_generator import build_mvp_mesh, build_params_dict
+import Rhino.Geometry as rg
+
+verts, faces = build_mvp_mesh(height_total_m, landing_radius_m, twist_total_deg)
+params_dict = build_params_dict(candidate_id, height_total_m, landing_radius_m, twist_total_deg)
+
+# verts/faces -> RhinoCommon Mesh for GH preview
+mesh = rg.Mesh()
+for v in verts:
+    mesh.Vertices.Add(v[0], v[1], v[2])
+for f in faces:
+    mesh.Faces.AddFace(f[0], f[1], f[2])
+mesh.Normals.ComputeNormals()
+mesh.Compact()
+
+a = mesh           # output 0: mesh
+b = params_dict    # output 1: params_dict
+c = candidate_id   # output 2: candidate_id (pass-through)
+```
+
+`REPO_ROOT` 절대경로는 각자 머신에 맞춰 수정 (TODO: 환경변수 LEAFLAB_REPO_ROOT로 빼는 게 깔끔 — Phase C 작업).
+
+### `export` 컴포넌트 코드 (paste)
+
+```python
+# r: trimesh
+import sys, pathlib
+REPO_ROOT = pathlib.Path(r"C:\Users\user\Documents\LFTH_CFD")
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from gh.scripts.export_candidate import export_candidate
+
+# convert RhinoCommon Mesh -> vert/face lists
+verts = [(v.X, v.Y, v.Z) for v in mesh.Vertices]
+faces = []
+for f in mesh.Faces:
+    if f.IsQuad:
+        faces.append((f.A, f.B, f.C))
+        faces.append((f.A, f.C, f.D))
+    else:
+        faces.append((f.A, f.B, f.C))
+
+out_dir = REPO_ROOT / "runs" / candidate_id
+summary = export_candidate(verts, faces, params_dict, out_dir)
+
+a = "OK | {} | tri={} | vert={}".format(
+    summary["stl_path"], summary["triangle_count"], summary["vertex_count"]
+)
+```
+
+### 빌드 + commit
+
+1. Rhino 8 + Grasshopper 열기 (`GH_MCP` 컴포넌트 없는 fresh 캔버스 권장 — 협업자 머신 호환성)
+2. 위 컴포넌트 배치 + 와이어 + 코드 paste
+3. `File → Save As...` → `C:\Users\user\Documents\LFTH_CFD\gh\LeafGenerator.gh`
+4. `git add gh/LeafGenerator.gh && git commit -m "feat: Phase B.2 LeafGenerator.gh skeleton"`
+
+### 동작 확인 (end-to-end)
+
+```powershell
+# 0. 후보 디렉토리 셋업 (init-run 은 template만 만들고, GH가 덮어씀)
+uv run leaflab init-run cand_phaseb_e2e
+
+# 1. Rhino에서 LeafGenerator.gh 열기, candidate_id panel을 "cand_phaseb_e2e"로 변경
+#    -> 자동 recompute -> runs/cand_phaseb_e2e/{params.json, geometry/leaf.stl} 작성
+
+# 2. STL 검증
+uv run leaflab check-geometry runs/cand_phaseb_e2e
+
+# 3. 결과 metrics 검증
+uv run leaflab validate runs/cand_phaseb_e2e/geometry_metrics.json
+```
+
+세 단계 다 `ok:` 출력하면 Phase B 완료.
+
+### MVP 한계 (의도된 trade-off)
+
+- 형상: 단순 tapered + twisted cylinder. 실제 leaf 아님.
+- 슬라이더 3개만. 모든 schema 필드 노출 X.
+- Spine / leaf profile / rim / channel — Phase C 또는 후속 task.
+
+이 단계 목표는 GH ↔ leaflab CLI **파이프라인 동작 검증** 이지 최종 형상 X.
 
 ## 의존성 격리 검증
 
