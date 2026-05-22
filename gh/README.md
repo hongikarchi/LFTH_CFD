@@ -202,11 +202,14 @@ c = "verts={} faces={} bbox_m={}".format(
 )
 ```
 
-### 2. `water_sim` 코드 (paste)
+### 2. `water_sim` 코드 (paste) — PR-H particle CFD
+
+`reference_meshes` 를 GH Geometry param 으로 직접 받음 (mesh_json 우회 X).
+입력 5개: `reference_meshes` (Mesh, List), `nozzle_points` (Point3d, List), `flow_rate_lpm`, `tilt_deg`, `azimuth_deg`.
 
 ```python
 # r: trimesh
-import sys, pathlib, json, importlib
+import sys, pathlib, importlib
 import Rhino, Rhino.Geometry as rg
 import trimesh
 import numpy as np
@@ -217,42 +220,57 @@ if str(REPO_ROOT) not in sys.path:
 
 import gh.scripts.water_sim
 importlib.reload(gh.scripts.water_sim)
-from gh.scripts.water_sim import (
-    nozzles_from_points, velocity_from_tilt, simulate_water_path_polyline,
-)
+from gh.scripts.water_sim import simulate_water_curtain
 
 doc = Rhino.RhinoDoc.ActiveDoc
 m_to_doc = Rhino.RhinoMath.UnitScale(Rhino.UnitSystem.Meters, doc.ModelUnitSystem)
 m_to_doc = m_to_doc if m_to_doc != 0 else 1.0
 doc_to_m = 1.0 / m_to_doc
 
-mesh_data = json.loads(mesh_json)
+# extract trimesh inline from Rhino Mesh objects (no JSON middle step)
+verts, faces = [], []
+for m in reference_meshes:
+    base = len(verts)
+    for v in m.Vertices:
+        verts.append((v.X * doc_to_m, v.Y * doc_to_m, v.Z * doc_to_m))
+    for f in m.Faces:
+        if f.IsQuad:
+            faces.append((base + f.A, base + f.B, base + f.C))
+            faces.append((base + f.A, base + f.C, base + f.D))
+        else:
+            faces.append((base + f.A, base + f.B, base + f.C))
 tm = trimesh.Trimesh(
-    vertices=np.asarray(mesh_data["verts"], dtype=float),
-    faces=np.asarray(mesh_data["faces"], dtype=int),
+    vertices=np.asarray(verts, dtype=float),
+    faces=np.asarray(faces, dtype=int),
     process=False,
 )
 
-points_xyz = [(p.X * doc_to_m, p.Y * doc_to_m, p.Z * doc_to_m) for p in nozzle_points]
-velocity_shared = velocity_from_tilt(
-    fall_height_m=15.0, tilt_deg=tilt_deg, azimuth_deg=azimuth_deg,
-)
-nozzles = nozzles_from_points(
-    points_xyz, flow_rate_lpm, velocity_mps_shared=velocity_shared,
+# nozzle points -> meters
+nozzles_m = [(p.X * doc_to_m, p.Y * doc_to_m, p.Z * doc_to_m) for p in nozzle_points]
+
+# particle CFD: per nozzle, n_particles_from_flow_rate(flow_rate_lpm) droplets;
+# each gets v = sqrt(2gh) in (tilt, azimuth) direction; mesh collisions
+# choose specular / diffuse / slide based on impact speed.
+trajectories = simulate_water_curtain(
+    tm, nozzles_m,
+    flow_rate_lpm=flow_rate_lpm,
+    tilt_deg=tilt_deg,
+    azimuth_deg=azimuth_deg,
+    fall_height_m=15.0,
 )
 
 curves = []
-polylines_m = []
-for nz in nozzles:
-    sp = tuple(nz["position"])
-    vel = tuple(nz["velocity_mps"]) if nz["velocity_mps"] else (0.0, 0.0, -17.15)
-    pts_m = simulate_water_path_polyline(sp, vel, tm, max_bounces=20)
-    polylines_m.append(pts_m)
-    poly = rg.Polyline([rg.Point3d(x * m_to_doc, y * m_to_doc, z * m_to_doc) for (x, y, z) in pts_m])
-    curves.append(poly.ToNurbsCurve())
+for traj in trajectories:
+    pts = [rg.Point3d(x * m_to_doc, y * m_to_doc, z * m_to_doc) for (x, y, z) in traj.points]
+    if len(pts) >= 2:
+        curves.append(rg.Polyline(pts).ToNurbsCurve())
 
 a = curves
-b = json.dumps({"nozzles": nozzles, "polylines_m": polylines_m})
+b = "particles={}, total_pts={}, ended_at_pond={}".format(
+    len(trajectories),
+    sum(len(t.points) for t in trajectories),
+    sum(1 for t in trajectories if t.terminated_by == "pond"),
+)
 ```
 
 ### 3. `evaluator` 코드 (paste)

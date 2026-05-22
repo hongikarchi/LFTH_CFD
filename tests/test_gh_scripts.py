@@ -421,3 +421,136 @@ def test_export_candidate_writes_valid_params_for_leaflab_validate(
     with (out_dir / "params.json").open(encoding="utf-8") as fh:
         loaded = load_params(json.load(fh))
     assert loaded.candidate_id == sample_params_dict["candidate_id"]
+
+
+# ---------------------------------------------------------------------------
+# PR-H — particle CFD physics
+# ---------------------------------------------------------------------------
+
+
+def test_initial_velocity_vertical() -> None:
+    from gh.scripts.water_sim import initial_velocity_from_tilt
+
+    v = initial_velocity_from_tilt(fall_height_m=15.0, tilt_deg=0.0)
+    expected_mag = math.sqrt(2.0 * 9.81 * 15.0)
+    assert abs(v[0]) < 1e-9
+    assert abs(v[1]) < 1e-9
+    assert abs(v[2] + expected_mag) < 1e-6
+
+
+def test_initial_velocity_horizontal_x() -> None:
+    from gh.scripts.water_sim import initial_velocity_from_tilt
+
+    v = initial_velocity_from_tilt(fall_height_m=15.0, tilt_deg=90.0, azimuth_deg=0.0)
+    expected_mag = math.sqrt(2.0 * 9.81 * 15.0)
+    assert abs(v[0] - expected_mag) < 1e-6
+    assert abs(v[1]) < 1e-6
+    assert abs(v[2]) < 1e-6
+
+
+def test_n_particles_from_flow_rate_values() -> None:
+    from gh.scripts.water_sim import n_particles_from_flow_rate
+
+    assert n_particles_from_flow_rate(45.0) == 180
+    assert n_particles_from_flow_rate(0.5) == 2
+    assert n_particles_from_flow_rate(0.01) == 1
+    assert n_particles_from_flow_rate(10000.0) == 200
+
+
+def test_simulate_particle_specular_lift_on_flat() -> None:
+    from gh.scripts.water_sim import simulate_particle
+
+    mesh = _flat_quad_mesh(size=20.0, z=0.0)
+    traj = simulate_particle(
+        mesh,
+        start_xyz_m=(0.0, 0.0, 20.0),
+        velocity_mps=(0.0, 0.0, -15.0),
+        elastic_speed_threshold_mps=5.0,
+        max_bounces=3,
+    )
+    assert traj.n_collisions >= 1
+    rising = max(p[2] for p in traj.points[1:])
+    assert rising > 0.5, f"specular bounce didn't lift water: max z = {rising:.2f}"
+
+
+def test_simulate_particle_slide_on_tilted() -> None:
+    import numpy as np
+    import trimesh
+
+    from gh.scripts.water_sim import simulate_particle
+
+    verts = np.array(
+        [[-5, -5, 0], [5, -5, 0], [5, 5, 5], [-5, 5, 5]],
+        dtype=float,
+    )
+    faces = np.array([[0, 1, 2], [0, 2, 3]], dtype=int)
+    mesh = trimesh.Trimesh(vertices=verts, faces=faces, process=False)
+    traj = simulate_particle(
+        mesh,
+        start_xyz_m=(0.0, 0.0, 3.0),
+        velocity_mps=(0.0, 0.0, -1.0),
+        elastic_speed_threshold_mps=10.0,
+        slide_speed_threshold_mps=3.0,
+        max_bounces=5,
+    )
+    assert traj.n_collisions >= 1
+    assert traj.points[-1][2] <= 1.0
+
+
+def test_simulate_water_curtain_particle_count() -> None:
+    from gh.scripts.water_sim import simulate_water_curtain
+
+    mesh = _flat_quad_mesh(size=20.0, z=0.0)
+    trajectories = simulate_water_curtain(
+        mesh,
+        nozzle_points_m=[(0.0, 0.0, 15.0)],
+        flow_rate_lpm=10.0,
+        tilt_deg=0.0,
+        azimuth_deg=0.0,
+        fall_height_m=15.0,
+    )
+    assert len(trajectories) == 40  # 10 lpm × 4 base = 40 particles
+
+
+def test_simulate_water_curtain_determinism() -> None:
+    from gh.scripts.water_sim import simulate_water_curtain
+
+    mesh = _flat_quad_mesh(size=20.0, z=0.0)
+    a = simulate_water_curtain(mesh, [(0.0, 0.0, 15.0)], 5.0, 0.0, 0.0, rng_seed=42)
+    b = simulate_water_curtain(mesh, [(0.0, 0.0, 15.0)], 5.0, 0.0, 0.0, rng_seed=42)
+    assert len(a) == len(b)
+    for ta, tb in zip(a, b, strict=False):
+        for pa, pb in zip(ta.points, tb.points, strict=False):
+            assert abs(pa[0] - pb[0]) < 1e-9
+            assert abs(pa[1] - pb[1]) < 1e-9
+            assert abs(pa[2] - pb[2]) < 1e-9
+
+
+def test_simulate_water_curtain_reaches_pond() -> None:
+    from gh.scripts.water_sim import simulate_water_curtain
+
+    mesh = _flat_quad_mesh(size=20.0, z=0.0)
+    trajectories = simulate_water_curtain(mesh, [(0.0, 0.0, 15.0)], 5.0, 0.0, 0.0, pond_z_m=-2.0)
+    for t in trajectories:
+        assert t.points[-1][2] <= 0.5
+
+
+def test_simulate_water_curtain_cascade_xy_spread() -> None:
+    from gh.scripts.water_sim import simulate_water_curtain
+
+    mesh = _stacked_disc_mesh(n_layers=6)
+    trajectories = simulate_water_curtain(
+        mesh,
+        [(0.0, 0.0, 29.0)],
+        flow_rate_lpm=5.0,
+        tilt_deg=0.0,
+        azimuth_deg=0.0,
+        rng_seed=1,
+    )
+    all_xs: list[float] = []
+    all_ys: list[float] = []
+    for t in trajectories:
+        all_xs.extend(p[0] for p in t.points)
+        all_ys.extend(p[1] for p in t.points)
+    xy_span = max(max(all_xs) - min(all_xs), max(all_ys) - min(all_ys))
+    assert xy_span >= 0.5, f"cascade xy_span = {xy_span:.2f}m too small"
