@@ -620,12 +620,22 @@ def simulate_particle(
                 ray_directions=_np.asarray([ray_dir], dtype=float),
                 multiple_hits=False,
             )
-        except Exception:
+            # fallback: if primary ray misses but particle is above pond,
+            # also try straight-down (catches mesh below when vel points up
+            # after a specular bounce — water arcs up then falls).
+            if len(locs) == 0 and ray_dir[2] > -0.5:
+                locs, idx_ray, idx_tri = rmi.intersects_location(
+                    ray_origins=_np.asarray([pos], dtype=float),
+                    ray_directions=_np.asarray([[0.0, 0.0, -1.0]], dtype=float),
+                    multiple_hits=False,
+                )
+        except Exception as _exc:  # noqa: BLE001
+            print("RAYCAST ERROR:", type(_exc).__name__, str(_exc))
             locs = []
             idx_tri = []
 
         if len(locs) == 0:
-            # free-fall to pond, sample parabola
+            # truly no leaf reachable — free-fall to pond, sample parabola
             if pos[2] <= pond_z_m:
                 terminated_by = "pond"
                 break
@@ -798,6 +808,289 @@ def simulate_water_curtain(
                 nozzle_id=nz_id,
                 particle_idx=p_idx,
                 rng_seed=rng_seed + nz_idx * 1000 + p_idx,
+                **sim_kwargs,
+            )
+            trajectories.append(traj)
+    return trajectories
+
+
+# ---------------------------------------------------------------------------
+# PR-I — time-step integrated fluid CFD (pump exit + Euler + splash response)
+# ---------------------------------------------------------------------------
+
+
+def pump_exit_velocity(
+    pump_exit_speed_mps,
+    tilt_deg,
+    azimuth_deg=0.0,
+):
+    """Initial velocity AT NOZZLE EXIT — magnitude is the pump's exit speed.
+
+    Differs from `initial_velocity_from_tilt` (which uses sqrt(2gh), the
+    post-fall speed): here magnitude is the nozzle release speed (small,
+    pump-dependent). Gravity accelerates the particle thereafter.
+
+    Direction: (sin t cos a, sin t sin a, -cos t).
+    """
+    if pump_exit_speed_mps < 0:
+        raise ValueError("pump_exit_speed_mps must be >= 0, got {0}".format(pump_exit_speed_mps))
+    t = math.radians(tilt_deg)
+    a = math.radians(azimuth_deg)
+    return (
+        pump_exit_speed_mps * math.sin(t) * math.cos(a),
+        pump_exit_speed_mps * math.sin(t) * math.sin(a),
+        -pump_exit_speed_mps * math.cos(t),
+    )
+
+
+def simulate_particle_dt(
+    mesh,
+    start_xyz_m,
+    velocity_mps,
+    dt_s=0.02,
+    max_steps=500,
+    gravity_mps2=9.81,
+    pond_z_m=0.0,
+    normal_absorb=0.80,
+    tangent_friction=0.20,
+    pool_speed_mps=0.30,
+    pool_normal_dot=0.85,
+    drag_coeff=0.0,
+    sample_every=1,
+    pos_offset_m=1.0e-3,
+    nozzle_id="",
+    particle_idx=0,
+):
+    """Time-step integrated fluid particle. Euler integration + segment raycast.
+
+    Per step (dt_s seconds):
+      1. predict new_pos = pos + vel*dt + 0.5*g*dt^2 (parabola visible by sampling)
+      2. raycast(pos -> new_pos); if hit:
+         - decompose v_at_hit into v_normal + v_tangent (along face normal)
+         - v_normal_new = -v_normal * (1 - normal_absorb)   # fluid absorbs most
+         - v_tangent_new = v_tangent * (1 - tangent_friction)
+         - vel = v_normal_new + v_tangent_new
+         - pos = hit + normal*eps
+         - if |vel| < pool_speed AND face_normal_z > pool_normal_dot:
+              terminated_by = "pooled"
+      3. else: pos = new_pos, vel += g*dt (+ optional drag)
+      4. sample polyline every `sample_every` steps
+
+    Termination: pond_z reached, max_steps exceeded, pooled, stuck.
+    """
+    if dt_s <= 0:
+        raise ValueError("dt_s must be > 0")
+    if not (0.0 <= normal_absorb <= 1.0):
+        raise ValueError("normal_absorb must be in [0, 1]")
+    if not (0.0 <= tangent_friction <= 1.0):
+        raise ValueError("tangent_friction must be in [0, 1]")
+    if max_steps < 1:
+        raise ValueError("max_steps must be >= 1")
+    if sample_every < 1:
+        raise ValueError("sample_every must be >= 1")
+
+    pos = (float(start_xyz_m[0]), float(start_xyz_m[1]), float(start_xyz_m[2]))
+    vel = (float(velocity_mps[0]), float(velocity_mps[1]), float(velocity_mps[2]))
+    points = [pos]
+    n_collisions = 0
+    terminated_by = "max_steps"
+    g = (0.0, 0.0, -gravity_mps2)
+    rmi = mesh.ray
+
+    import numpy as _np
+
+    for step in range(max_steps):
+        if pos[2] <= pond_z_m:
+            terminated_by = "pond"
+            break
+
+        # predict next position under gravity for this dt
+        new_pos = (
+            pos[0] + vel[0] * dt_s,
+            pos[1] + vel[1] * dt_s,
+            pos[2] + vel[2] * dt_s + 0.5 * g[2] * dt_s * dt_s,
+        )
+        # segment from pos to new_pos
+        seg = (new_pos[0] - pos[0], new_pos[1] - pos[1], new_pos[2] - pos[2])
+        seg_len = math.sqrt(seg[0] ** 2 + seg[1] ** 2 + seg[2] ** 2)
+        if seg_len < 1e-9:
+            terminated_by = "stuck"
+            break
+        ray_dir = (seg[0] / seg_len, seg[1] / seg_len, seg[2] / seg_len)
+
+        try:
+            locs, _ir, idx_tri = rmi.intersects_location(
+                ray_origins=_np.asarray([pos], dtype=float),
+                ray_directions=_np.asarray([ray_dir], dtype=float),
+                multiple_hits=True,
+            )
+        except Exception as _exc:  # noqa: BLE001
+            print("RAYCAST ERROR:", type(_exc).__name__, str(_exc))
+            locs, idx_tri = [], []
+
+        # filter hits to within this dt segment
+        best_t = None
+        best_idx = None
+        best_pt = None
+        for li in range(len(locs)):
+            dx = float(locs[li][0]) - pos[0]
+            dy = float(locs[li][1]) - pos[1]
+            dz = float(locs[li][2]) - pos[2]
+            t_dist = math.sqrt(dx * dx + dy * dy + dz * dz)
+            in_seg = 1e-6 < t_dist <= seg_len + 1e-6
+            if in_seg and (best_t is None or t_dist < best_t):
+                best_t = t_dist
+                best_idx = int(idx_tri[li])
+                best_pt = (
+                    float(locs[li][0]),
+                    float(locs[li][1]),
+                    float(locs[li][2]),
+                )
+
+        if best_pt is not None:
+            normal_raw = mesh.face_normals[best_idx]
+            normal_unit = _vec_unit(
+                (float(normal_raw[0]), float(normal_raw[1]), float(normal_raw[2]))
+            )
+            if _vec_dot(normal_unit, ray_dir) > 0.0:
+                normal_unit = (-normal_unit[0], -normal_unit[1], -normal_unit[2])
+            # vel at hit (gravity accumulates over fraction of dt)
+            t_frac = best_t / seg_len
+            dt_to_hit = dt_s * t_frac
+            v_at_hit = (
+                vel[0] + g[0] * dt_to_hit,
+                vel[1] + g[1] * dt_to_hit,
+                vel[2] + g[2] * dt_to_hit,
+            )
+            # decompose
+            vn = _vec_dot(v_at_hit, normal_unit)
+            v_norm_vec = (
+                vn * normal_unit[0],
+                vn * normal_unit[1],
+                vn * normal_unit[2],
+            )
+            v_tan = (
+                v_at_hit[0] - v_norm_vec[0],
+                v_at_hit[1] - v_norm_vec[1],
+                v_at_hit[2] - v_norm_vec[2],
+            )
+            # fluid response: most normal absorbed (small reverse), tangent friction
+            v_norm_new = (
+                -vn * (1.0 - normal_absorb) * normal_unit[0],
+                -vn * (1.0 - normal_absorb) * normal_unit[1],
+                -vn * (1.0 - normal_absorb) * normal_unit[2],
+            )
+            v_tan_new = (
+                v_tan[0] * (1.0 - tangent_friction),
+                v_tan[1] * (1.0 - tangent_friction),
+                v_tan[2] * (1.0 - tangent_friction),
+            )
+            vel_new = (
+                v_norm_new[0] + v_tan_new[0],
+                v_norm_new[1] + v_tan_new[1],
+                v_norm_new[2] + v_tan_new[2],
+            )
+            new_pos_after_hit = (
+                best_pt[0] + normal_unit[0] * pos_offset_m,
+                best_pt[1] + normal_unit[1] * pos_offset_m,
+                best_pt[2] + normal_unit[2] * pos_offset_m,
+            )
+            points.append(best_pt)
+            n_collisions += 1
+            pos = new_pos_after_hit
+            vel = vel_new
+            # pooling on near-horizontal surface
+            if _vec_norm(vel) < pool_speed_mps and abs(normal_unit[2]) > pool_normal_dot:
+                terminated_by = "pooled"
+                break
+        else:
+            # free-fall this step
+            pos = new_pos
+            vel_new = (
+                vel[0] + g[0] * dt_s,
+                vel[1] + g[1] * dt_s,
+                vel[2] + g[2] * dt_s,
+            )
+            if drag_coeff > 0.0:
+                speed = _vec_norm(vel_new)
+                drag_factor = drag_coeff * speed * dt_s
+                vel_new = (
+                    vel_new[0] - vel_new[0] * drag_factor,
+                    vel_new[1] - vel_new[1] * drag_factor,
+                    vel_new[2] - vel_new[2] * drag_factor,
+                )
+            vel = vel_new
+            if step % sample_every == 0:
+                points.append(pos)
+
+    if points[-1] != pos:
+        points.append(pos)
+
+    return ParticleTrajectory(
+        points=points,
+        nozzle_id=nozzle_id,
+        particle_idx=particle_idx,
+        n_collisions=n_collisions,
+        terminated_by=terminated_by,
+    )
+
+
+def simulate_water_curtain_dt(
+    mesh,
+    nozzle_points_m,
+    flow_rate_lpm,
+    tilt_deg,
+    azimuth_deg,
+    pump_exit_speed_mps=1.5,
+    dt_s=0.02,
+    max_steps=500,
+    gravity_mps2=9.81,
+    nozzle_jitter_m=0.05,
+    rng_seed=42,
+    base_particles_per_lpm=4.0,
+    particle_cap=200,
+    **sim_kwargs,
+):
+    """Per-nozzle multi-particle CFD with time-step integration + fluid splash.
+
+    Initial velocity = `pump_exit_velocity(pump_exit_speed_mps, tilt, azimuth)`.
+    Each particle simulated by `simulate_particle_dt`. Returns list of
+    ParticleTrajectory.
+    """
+    import random as _random
+
+    rng = _random.Random(rng_seed)
+    n_per = n_particles_from_flow_rate(
+        flow_rate_lpm,
+        base_particles_per_lpm=base_particles_per_lpm,
+        cap=particle_cap,
+    )
+    v0 = pump_exit_velocity(
+        pump_exit_speed_mps=pump_exit_speed_mps,
+        tilt_deg=tilt_deg,
+        azimuth_deg=azimuth_deg,
+    )
+    trajectories = []
+    for nz_idx, nz_pos in enumerate(nozzle_points_m):
+        nz_id = "n{0}".format(nz_idx)
+        for p_idx in range(n_per):
+            u = rng.random()
+            theta = rng.uniform(0.0, 2.0 * math.pi)
+            r = nozzle_jitter_m * math.sqrt(u)
+            jp = (
+                float(nz_pos[0]) + r * math.cos(theta),
+                float(nz_pos[1]) + r * math.sin(theta),
+                float(nz_pos[2]),
+            )
+            traj = simulate_particle_dt(
+                mesh,
+                jp,
+                v0,
+                dt_s=dt_s,
+                max_steps=max_steps,
+                gravity_mps2=gravity_mps2,
+                nozzle_id=nz_id,
+                particle_idx=p_idx,
                 **sim_kwargs,
             )
             trajectories.append(traj)
