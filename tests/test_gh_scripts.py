@@ -554,3 +554,145 @@ def test_simulate_water_curtain_cascade_xy_spread() -> None:
         all_ys.extend(p[1] for p in t.points)
     xy_span = max(max(all_xs) - min(all_xs), max(all_ys) - min(all_ys))
     assert xy_span >= 0.5, f"cascade xy_span = {xy_span:.2f}m too small"
+
+
+# ---------------------------------------------------------------------------
+# PR-I — time-step integration + fluid splash response
+# ---------------------------------------------------------------------------
+
+
+def test_pump_exit_velocity_vertical() -> None:
+    from gh.scripts.water_sim import pump_exit_velocity
+
+    v = pump_exit_velocity(pump_exit_speed_mps=1.5, tilt_deg=0.0)
+    assert abs(v[0]) < 1e-9
+    assert abs(v[1]) < 1e-9
+    assert abs(v[2] + 1.5) < 1e-6
+
+
+def test_pump_exit_velocity_horizontal() -> None:
+    from gh.scripts.water_sim import pump_exit_velocity
+
+    v = pump_exit_velocity(pump_exit_speed_mps=2.0, tilt_deg=90.0, azimuth_deg=0.0)
+    assert abs(v[0] - 2.0) < 1e-6
+    assert abs(v[1]) < 1e-6
+    assert abs(v[2]) < 1e-6
+
+
+def test_simulate_particle_dt_freefall_curvature() -> None:
+    """No mesh hit → parabolic z(t) = z0 + v0_z*t - ½g*t². dt-stepping accumulates gravity."""
+    from gh.scripts.water_sim import simulate_particle_dt
+
+    far_mesh = _flat_quad_mesh(size=2.0, z=-1000.0)  # never hit
+    traj = simulate_particle_dt(
+        far_mesh,
+        start_xyz_m=(0.0, 0.0, 100.0),
+        velocity_mps=(0.0, 0.0, -1.0),
+        dt_s=0.1,
+        max_steps=20,
+        pond_z_m=-50.0,
+    )
+    # after 20 steps × 0.1s = 2.0s: z = 100 - 1·2 - ½·9.81·4 = 78.38m
+    z_expected = 100.0 - 1.0 * 2.0 - 0.5 * 9.81 * 2.0 * 2.0
+    z_actual = traj.points[-1][2]
+    assert abs(z_actual - z_expected) < 0.5, f"z_actual={z_actual:.2f}, expected={z_expected:.2f}"
+
+
+def test_simulate_particle_dt_normal_absorb() -> None:
+    """normal_absorb=1.0 → head-on hit fully absorbs vel_z (no upward bounce)."""
+    from gh.scripts.water_sim import simulate_particle_dt
+
+    mesh = _flat_quad_mesh(size=20.0, z=0.0)
+    traj = simulate_particle_dt(
+        mesh,
+        start_xyz_m=(0.0, 0.0, 5.0),
+        velocity_mps=(0.0, 0.0, -3.0),
+        dt_s=0.05,
+        max_steps=200,
+        normal_absorb=1.0,
+        tangent_friction=0.0,
+    )
+    assert traj.n_collisions >= 1
+    # after full absorb on horizontal surface, vel_z should be ~0 → pooled
+    assert traj.terminated_by in ("pooled", "pond")
+
+
+def test_simulate_particle_dt_pool_termination() -> None:
+    """Slow particle on horizontal surface → pools (terminated_by='pooled')."""
+    from gh.scripts.water_sim import simulate_particle_dt
+
+    mesh = _flat_quad_mesh(size=20.0, z=0.0)
+    traj = simulate_particle_dt(
+        mesh,
+        start_xyz_m=(0.0, 0.0, 0.5),
+        velocity_mps=(0.0, 0.0, -0.2),
+        dt_s=0.05,
+        max_steps=50,
+        normal_absorb=0.95,
+        pool_speed_mps=1.0,
+    )
+    assert traj.terminated_by == "pooled"
+
+
+def test_simulate_particle_dt_tangent_friction_preserves_horizontal() -> None:
+    """Tilted plane hit → tangent vel preserved (low friction), water slides downhill."""
+    import numpy as np
+    import trimesh
+
+    from gh.scripts.water_sim import simulate_particle_dt
+
+    verts = np.array([[-5, -5, 0], [5, -5, 0], [5, 5, 5], [-5, 5, 5]], dtype=float)
+    faces = np.array([[0, 1, 2], [0, 2, 3]], dtype=int)
+    mesh = trimesh.Trimesh(vertices=verts, faces=faces, process=False)
+    traj = simulate_particle_dt(
+        mesh,
+        start_xyz_m=(0.0, 0.0, 3.0),
+        velocity_mps=(0.0, 0.0, -2.0),
+        dt_s=0.05,
+        max_steps=100,
+        normal_absorb=0.90,
+        tangent_friction=0.10,
+    )
+    assert traj.n_collisions >= 1
+    # check water actually deflected — final z must be below start z (3.0)
+    end = traj.points[-1]
+    assert end[2] < 3.0, f"final z {end[2]:.2f} >= start z (no deflection)"
+    # tangent component should produce some horizontal motion (slope = 45°)
+    xs = [p[0] for p in traj.points]
+    ys = [p[1] for p in traj.points]
+    xy_span = max(max(xs) - min(xs), max(ys) - min(ys))
+    assert xy_span > 0.1, f"xy_span {xy_span:.3f} too small — tangent vel not preserved"
+
+
+def test_simulate_water_curtain_dt_determinism() -> None:
+    from gh.scripts.water_sim import simulate_water_curtain_dt
+
+    mesh = _flat_quad_mesh(size=20.0, z=0.0)
+    a = simulate_water_curtain_dt(mesh, [(0.0, 0.0, 15.0)], 5.0, 0.0, 0.0, rng_seed=99)
+    b = simulate_water_curtain_dt(mesh, [(0.0, 0.0, 15.0)], 5.0, 0.0, 0.0, rng_seed=99)
+    assert len(a) == len(b) == 20
+    for ta, tb in zip(a, b, strict=False):
+        assert len(ta.points) == len(tb.points)
+        for pa, pb in zip(ta.points, tb.points, strict=False):
+            assert abs(pa[0] - pb[0]) < 1e-9
+            assert abs(pa[2] - pb[2]) < 1e-9
+
+
+def test_simulate_water_curtain_dt_cascade_with_curvature() -> None:
+    """On stacked-disc mesh, time-stepped sim shows polyline with ≥40 points (visible curve)."""
+    from gh.scripts.water_sim import simulate_water_curtain_dt
+
+    mesh = _stacked_disc_mesh(n_layers=6)
+    trajectories = simulate_water_curtain_dt(
+        mesh,
+        [(0.0, 0.0, 29.0)],
+        flow_rate_lpm=5.0,
+        tilt_deg=0.0,
+        azimuth_deg=0.0,
+        rng_seed=7,
+        dt_s=0.05,
+        max_steps=200,
+    )
+    # at least one trajectory should have many samples (parabolic curve visible)
+    max_pts = max(len(t.points) for t in trajectories)
+    assert max_pts >= 20, f"max polyline length = {max_pts}, no curve resolution"

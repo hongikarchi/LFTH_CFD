@@ -202,13 +202,20 @@ c = "verts={} faces={} bbox_m={}".format(
 )
 ```
 
-### 2. `water_sim` 코드 (paste) — PR-H particle CFD
+### 2. `water_sim` 코드 (paste) — PR-I fluid CFD (time-step + splash)
 
-`reference_meshes` 를 GH Geometry param 으로 직접 받음 (mesh_json 우회 X).
-입력 5개: `reference_meshes` (Mesh, List), `nozzle_points` (Point3d, List), `flow_rate_lpm`, `tilt_deg`, `azimuth_deg`.
+`reference_meshes` 를 GH Geometry param 으로 직접 받음.
+입력 9개: `reference_meshes` (Mesh, List), `nozzle_points` (Point3d, List), `flow_rate_lpm`, `tilt_deg`, `azimuth_deg`, `pump_exit_speed_mps`, `dt_s`, `normal_absorb`, `tangent_friction`.
+
+물리:
+- 초기 vel = pump 출구 속도 (작음, e.g. 1.5 m/s). 중력 가속 누적.
+- time-step `dt_s × max_steps` Euler 적분 → polyline 곡률 visible.
+- mesh hit: normal vel 흡수 (`normal_absorb`), tangent vel friction (`tangent_friction`). specular bounce 없음 — 유체 동작.
+- 저속 + 수평 면 → pooling (terminated_by="pooled").
 
 ```python
 # r: trimesh
+# r: rtree
 import sys, pathlib, importlib
 import Rhino, Rhino.Geometry as rg
 import trimesh
@@ -220,7 +227,7 @@ if str(REPO_ROOT) not in sys.path:
 
 import gh.scripts.water_sim
 importlib.reload(gh.scripts.water_sim)
-from gh.scripts.water_sim import simulate_water_curtain
+from gh.scripts.water_sim import simulate_water_curtain_dt
 
 doc = Rhino.RhinoDoc.ActiveDoc
 m_to_doc = Rhino.RhinoMath.UnitScale(Rhino.UnitSystem.Meters, doc.ModelUnitSystem)
@@ -234,11 +241,9 @@ for m in reference_meshes:
     for v in m.Vertices:
         verts.append((v.X * doc_to_m, v.Y * doc_to_m, v.Z * doc_to_m))
     for f in m.Faces:
-        if f.IsQuad:
-            faces.append((base + f.A, base + f.B, base + f.C))
+        faces.append((base + f.A, base + f.B, base + f.C))
+        if f.IsQuad and f.D != f.C:
             faces.append((base + f.A, base + f.C, base + f.D))
-        else:
-            faces.append((base + f.A, base + f.B, base + f.C))
 tm = trimesh.Trimesh(
     vertices=np.asarray(verts, dtype=float),
     faces=np.asarray(faces, dtype=int),
@@ -248,15 +253,17 @@ tm = trimesh.Trimesh(
 # nozzle points -> meters
 nozzles_m = [(p.X * doc_to_m, p.Y * doc_to_m, p.Z * doc_to_m) for p in nozzle_points]
 
-# particle CFD: per nozzle, n_particles_from_flow_rate(flow_rate_lpm) droplets;
-# each gets v = sqrt(2gh) in (tilt, azimuth) direction; mesh collisions
-# choose specular / diffuse / slide based on impact speed.
-trajectories = simulate_water_curtain(
+# fluid CFD: pump exit speed (small) + time-step integration + splash response
+trajectories = simulate_water_curtain_dt(
     tm, nozzles_m,
     flow_rate_lpm=flow_rate_lpm,
     tilt_deg=tilt_deg,
     azimuth_deg=azimuth_deg,
-    fall_height_m=15.0,
+    pump_exit_speed_mps=pump_exit_speed_mps,
+    dt_s=dt_s,
+    normal_absorb=normal_absorb,
+    tangent_friction=tangent_friction,
+    max_steps=400,
 )
 
 curves = []
@@ -266,12 +273,23 @@ for traj in trajectories:
         curves.append(rg.Polyline(pts).ToNurbsCurve())
 
 a = curves
-b = "particles={}, total_pts={}, ended_at_pond={}".format(
+b = "particles={}, pts/traj_avg={:.1f}, pond={}, pooled={}, collisions_total={}".format(
     len(trajectories),
-    sum(len(t.points) for t in trajectories),
+    (sum(len(t.points) for t in trajectories) / max(1, len(trajectories))),
     sum(1 for t in trajectories if t.terminated_by == "pond"),
+    sum(1 for t in trajectories if t.terminated_by == "pooled"),
+    sum(t.n_collisions for t in trajectories),
 )
 ```
+
+### 슬라이더 권장값 (PR-I)
+
+| 슬라이더 | 범위 | 기본 |
+|---------|------|------|
+| `pump_exit_speed_mps` | 0.5 – 5.0 | 1.5 |
+| `dt_s` | 0.01 – 0.10 | 0.02 |
+| `normal_absorb` | 0.50 – 0.99 | 0.80 |
+| `tangent_friction` | 0.0 – 0.5 | 0.20 |
 
 ### 3. `evaluator` 코드 (paste)
 
